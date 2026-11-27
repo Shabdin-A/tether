@@ -12,6 +12,7 @@
   turned off to hide the call pop-up while the iPhone or another client has the call. It is on by default; calls you
   answer or dial on the phone itself, and phones whose calls are not bridged, still show their screen, and the call
   notification stays (#13).
+- Docs: add an interactive Persian installation guide with device-specific steps, checklists, and troubleshooting.
 
 ## 1.2.5 — 2026-11-25
 
