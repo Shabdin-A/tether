@@ -223,4 +223,24 @@
     <string name="link_diagnostics_subtitle">اتصال و گزارش‌ها</string>
     <string name="link_sim_signal">سیگنال شبکهٔ موبایل %1$d از ۴ %2$s</string>
     <string name="link_plugged">(متصل به برق)</string>
+    <string name="contacts_default_badge">پیش‌فرض</string>
+    <string name="contacts_detail_back">بازگشت</string>
+    <string name="contacts_detail_more">گزینه‌های مخاطب</string>
+    <string name="contacts_detail_message">پیام</string>
+    <string name="contacts_detail_favourite">علاقه‌مندی</string>
+    <string name="contacts_detail_numbers">شماره‌های تلفن</string>
+    <string name="contacts_detail_about">درباره</string>
+    <string name="contacts_detail_name">نام مخاطب</string>
+    <string name="contacts_detail_no_numbers">شماره‌ای ثبت نشده است</string>
+    <string name="contacts_detail_number_actions">گزینه‌های شماره</string>
+    <string name="contacts_subtitle">مخاطبان گوشی شما</string>
+    <string name="contacts_search">جست‌وجوی مخاطبان</string>
+    <string name="contacts_favorites">علاقه‌مندی‌ها</string>
+    <string name="contacts_detail_mobile">همراه</string>
+    <string name="contacts_detail_home">خانه</string>
+    <string name="contacts_detail_work">کار</string>
+    <string name="contacts_detail_main">اصلی</string>
+    <string name="contacts_detail_other">سایر</string>
+    <string name="contacts_choose_number">انتخاب شماره</string>
+    <string name="contacts_choose_call_for">شماره‌ای برای تماس با %1$s انتخاب کنید</string>
 </resources>

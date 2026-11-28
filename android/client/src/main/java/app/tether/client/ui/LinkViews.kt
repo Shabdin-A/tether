@@ -73,12 +73,20 @@ internal class LinkViews(private val context: Context) {
         title: Int = R.string.tab_link,
         subtitle: Int = R.string.link_subtitle,
         compact: Boolean = false,
+        search: (() -> Unit)? = null,
         overflow: (View) -> Unit,
     ) {
         parent.addView(horizontal().apply {
             addView(icon(R.drawable.ic_link_chain, if (compact) 23 else 28, accent))
             addView(space(if (compact) 8 else 12, 0))
             addView(text(context.getString(R.string.link_brand), if (compact) 18f else 23f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
+            search?.let { action ->
+                addView(tile(R.drawable.ic_messages_search, 48, 20, Color.TRANSPARENT).apply {
+                    contentDescription = context.getString(R.string.contacts_search)
+                    isFocusable = true
+                    setOnClickListener { action() }
+                })
+            }
             addView(tile(R.drawable.ic_link_overflow, 48, if (compact) 19 else 22, Color.TRANSPARENT).apply {
                 contentDescription = context.getString(R.string.link_more_options)
                 isFocusable = true
