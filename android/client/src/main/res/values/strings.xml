@@ -225,4 +225,7 @@
     <string name="link_diagnostics_subtitle">Connection and logs</string>
     <string name="link_sim_signal">Cellular signal %1$d/4 %2$s</string>
     <string name="link_plugged">(plugged in)</string>
+    <string name="keypad_subtitle">Make a call through your phone</string>
+    <string name="keypad_select_sim">Select a SIM before calling</string>
+    <string name="keypad_backspace">Delete digit</string>
 </resources>

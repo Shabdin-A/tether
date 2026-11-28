@@ -4,6 +4,13 @@ import app.tether.client.model.BatteryAlert
 import app.tether.client.report.ClientReport
 import app.tether.client.report.ReportUi
 import android.Manifest
+import app.tether.client.model.Sim
+import android.widget.Toast
+import android.widget.ImageButton
+import android.widget.ImageView
+import android.text.TextUtils
+import android.graphics.drawable.InsetDrawable
+import android.graphics.Color
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
@@ -24,7 +31,6 @@ import android.view.Gravity
 import android.view.View
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.GridLayout
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
@@ -47,6 +53,7 @@ class MainActivity : Activity() {
     private lateinit var content: FrameLayout
     private lateinit var banner: LinearLayout
     private lateinit var status: TextView
+    private lateinit var legacyHeader: LinearLayout
     private lateinit var viewport: ClientTabViewport
     private lateinit var tabBar: LinearLayout
     private var tabAppearance: Triple<Int, Int, Int>? = null
@@ -67,11 +74,11 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         tab = savedInstanceState?.getInt("tab") ?: if (app.identity.isPaired) TAB_RECENTS else TAB_LINK
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(col(R.color.background)) }
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(6)) }
-        header.addView(label(getString(R.string.app_name), size = 22f, bold = true).weight())
+        legacyHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(6)) }
+        legacyHeader.addView(label(getString(R.string.app_name), size = 22f, bold = true).weight())
         status = label("", R.color.muted, 13f)
-        header.addView(status)
-        root.addView(header)
+        legacyHeader.addView(status)
+        root.addView(legacyHeader)
         banner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), 0) }
         root.addView(banner)
         viewport = ClientTabViewport(this)
@@ -85,7 +92,8 @@ class MainActivity : Activity() {
         root.addView(tabBar)
         setContentView(root)
         fitSystemBars(root)
-        handleIntent(intent)
+        number.append(savedInstanceState?.getString(EXTRA_NUMBER).orEmpty())
+        if (savedInstanceState == null) handleIntent(intent) else render()
         askPermissions()
     }
 
@@ -98,7 +106,7 @@ class MainActivity : Activity() {
         render()
     }
 
-    override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); outState.putInt("tab", tab) }
+    override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); outState.putInt("tab", tab); outState.putString(EXTRA_NUMBER, number.toString()) }
 
     override fun onResume() {
         super.onResume()
@@ -138,6 +146,8 @@ class MainActivity : Activity() {
 
     private fun render() {
         val s = app.state
+        if (!app.link.isConnected) keypadSim.clear()
+        else if (keypadSim.hasTemporarySelection) keypadSim.resolve(keypadSims().map { it.sub }, s.defaultSub)
         status.text = when (app.linkState) {
             BleCentral.State.CONNECTED -> "● " + (app.identity.peerName ?: getString(R.string.android_phone))
             BleCentral.State.OFF -> getString(R.string.state_bt_off)
@@ -146,6 +156,7 @@ class MainActivity : Activity() {
             else -> getString(R.string.state_connecting)
         }
         status.setTextColor(col(if (app.linkState == BleCentral.State.CONNECTED) R.color.ok else R.color.muted))
+        legacyHeader.visibility = if (tab == TAB_KEYPAD) View.GONE else View.VISIBLE
         viewport.bounded = tab != TAB_LINK
         renderTabBar(s.unreadTotal, s.missedCount)
         renderBanner()
@@ -559,80 +570,298 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ Keypad
 
-    private var keypadRoot: View? = null
-    private lateinit var keypadNumber: TextView
-    private lateinit var keypadWho: TextView
-    private lateinit var keypadBack: View
-    private lateinit var keypadCalls: LinearLayout
-    private lateinit var keypadAdd: View
-    private lateinit var keypadUssd: View
 
     /** The keypad is built once while it is shown; a key press or a state change only updates its texts and buttons. */
+    private lateinit var keypadView: KeypadView
+    private val keypadSim = KeypadSimSelection()
+
+    private fun keypadSims(): List<Sim> =
+        if (app.link.isConnected && app.state.hasLiveStatus) app.state.sims else emptyList()
+
     private fun keypad() {
-        list = null; listTab = -1
-        if (keypadRoot?.parent == null) {
+        if (listTab != TAB_KEYPAD) {
+            listTab = TAB_KEYPAD
+            list = null
             content.removeAllViews()
-            content.addView(buildKeypad().also { keypadRoot = it })
+            keypadView = KeypadView()
+            content.addView(keypadView, FrameLayout.LayoutParams(-1, -1))
         }
-        updateKeypad()
+        keypadView.refresh()
     }
 
-    private fun buildKeypad(): View {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setPadding(dp(24), dp(8), dp(24), dp(16)) }
-        // The number, centred, with backspace at its end (a spacer of the same width keeps it centred).
-        keypadNumber = label("", size = 32f).apply { gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.START
-            textDirection = View.TEXT_DIRECTION_LTR }
-        keypadBack = iconButton(R.drawable.ic_backspace, getString(R.string.delete_digit), R.color.muted,
-            onLong = { number.clear(); updateKeypad() }) { if (number.isNotEmpty()) number.deleteCharAt(number.length - 1); updateKeypad() }
-        box.addView(row(View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)) }, keypadNumber.weight(), keypadBack),
-            LinearLayout.LayoutParams(-1, dp(64)))
-        keypadWho = label("", R.color.muted, 14f).apply { gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER; maxLines = 1 }
-        box.addView(keypadWho, LinearLayout.LayoutParams(-1, -2))
-        val grid = GridLayout(this).apply { columnCount = 3; layoutDirection = View.LAYOUT_DIRECTION_LTR }
-        val keys = listOf("1" to "", "2" to "ABC", "3" to "DEF", "4" to "GHI", "5" to "JKL", "6" to "MNO", "7" to "PQRS", "8" to "TUV", "9" to "WXYZ", "*" to "", "0" to "+", "#" to "")
-        for ((k, sub) in keys) {
-            grid.addView(dialKey(k, sub, onLong = if (k == "0") ({ number.append("+"); updateKeypad() }) else null) { number.append(k); updateKeypad() },
-                GridLayout.LayoutParams().apply { width = dp(76); height = dp(76); setMargins(dp(10), dp(6), dp(10), dp(6)) })
+    private inner class KeypadView : ClientTabViewport(this@MainActivity) {
+        private val owner = this@MainActivity
+        private val entry = label("", size = 26f, bold = true).apply {
+            gravity = Gravity.CENTER
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            setSingleLine()
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+            setAutoSizeTextTypeUniformWithConfiguration(16, 26, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+            textDirection = View.TEXT_DIRECTION_LTR
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        // Its own width, so the column centres it: a full-width GridLayout keeps its keys at the left (#29).
-        box.addView(grid, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) })
-        keypadCalls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER }
-        box.addView(keypadCalls, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
-        // Under the call buttons: carrier codes (USSD) on the Android phone's SIM, and adding the number to contacts.
-        keypadUssd = button(getString(R.string.ussd_button), Look.TONAL, iconId = R.drawable.ic_dialpad) { openUssd(number.toString(), null) }
-        keypadAdd = button(getString(R.string.add_contact), Look.TEXT, iconId = R.drawable.ic_person_add) { editContact(null, number.toString()) }
-        box.addView(keypadUssd, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) })
-        box.addView(keypadAdd, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(4) })
-        return ScrollView(this).apply { addView(box) }
+        private val contact = label("", R.color.muted, 14f).apply {
+            gravity = Gravity.CENTER
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            setSingleLine()
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        private val simBar = row().apply {
+            background = InsetDrawable(linkViews.shape(KEY_SURFACE, 22), 0, dp(3), 0, dp(3))
+            setPadding(0, 0, 0, 0)
+        }
+        private var renderedSims: List<Sim> = emptyList()
+        private var renderedSelection: Int? = null
+        private val add = iconAction(R.drawable.ic_keypad_add_contact, R.string.add_contact, 48, KEY_SURFACE, Color.WHITE) {
+            if (number.isNotEmpty() && app.state.name(number.toString()) == null) editContact(null, number.toString())
+        }
+        private val erase = iconAction(R.drawable.ic_keypad_backspace, R.string.keypad_backspace, 48, KEY_SURFACE, Color.WHITE) {
+            if (number.isNotEmpty()) number.deleteCharAt(number.length - 1)
+            refreshNumber()
+        }.apply {
+            setOnLongClickListener { number.clear(); refreshNumber(); true }
+        }
+
+        private val ussdButton = button(getString(R.string.ussd_button), Look.TONAL, iconId = R.drawable.ic_dialpad) {
+                openUssd(number.toString(), keypadSim.resolve(keypadSims().map { it.sub }, app.state.defaultSub))
+            }
+
+        init {
+            val column = column()
+            linkViews.heading(column, R.string.tab_keypad, R.string.keypad_subtitle, overflow = ::showLinkOverflow)
+            val panel = LinearLayout(owner).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            val entryHeight = entry.reservedLineHeight()
+            val contactHeight = contact.reservedLineHeight()
+            val numberRegion = LinearLayout(owner).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(entry, LinearLayout.LayoutParams(-1, entryHeight))
+                addView(contact, LinearLayout.LayoutParams(-1, contactHeight))
+            }
+            val upper = LinearLayout(owner).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(simBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(7) })
+                addView(numberRegion, LinearLayout.LayoutParams(-1, -2))
+                addView(ussdButton, LinearLayout.LayoutParams(-2, -2))
+            }
+            panel.addView(upper, LinearLayout.LayoutParams(-1, -2))
+            panel.addView(View(owner), LinearLayout.LayoutParams(-1, 0, 1f))
+            val dialer = LinearLayout(owner).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            panel.addView(dialer, LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(8)
+                bottomMargin = dp(12)
+            })
+            val gridRows = ArrayList<LinearLayout>(4)
+            val keyViews = ArrayList<View>(12)
+            val keys = listOf("1" to "", "2" to "ABC", "3" to "DEF", "4" to "GHI", "5" to "JKL", "6" to "MNO",
+                "7" to "PQRS", "8" to "TUV", "9" to "WXYZ", "*" to "", "0" to "+", "#" to "")
+            for (line in keys.chunked(3)) {
+                dialer.addView(row().apply {
+                    gridRows += this
+                    layoutDirection = View.LAYOUT_DIRECTION_LTR
+                    gravity = Gravity.CENTER
+                    for ((digit, letters) in line) addView(FrameLayout(owner).apply {
+                        val key = numberKey(digit, letters)
+                        keyViews += key
+                        addView(key, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER))
+                    }, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                        marginStart = dp(4); marginEnd = dp(4)
+                    })
+                }, LinearLayout.LayoutParams(-1, -2).apply {
+                    marginStart = dp(8); marginEnd = dp(8)
+                })
+            }
+            val actions = row().apply {
+                gravity = Gravity.CENTER
+                layoutDirection = View.LAYOUT_DIRECTION_LTR
+            }
+            actions.addView(add, LinearLayout.LayoutParams(dp(48), dp(48)).apply { rightMargin = dp(20) })
+            val call = iconAction(R.drawable.ic_thread_call, R.string.call, 56, KEYPAD_ACCENT, Color.WHITE) {
+                if (number.isEmpty()) return@iconAction
+                val sims = keypadSims()
+                val selected = keypadSim.resolve(sims.map { it.sub }, app.state.defaultSub)
+                if (sims.size > 1 && selected == null) {
+                    Toast.makeText(owner, R.string.keypad_select_sim, Toast.LENGTH_SHORT).show()
+                    refresh()
+                    return@iconAction
+                }
+                val value = number.toString()
+                if (UssdCodes.valid(value) && app.state.canUssd) openUssd(value, selected)
+                else app.dial(value, selected)
+                number.clear()
+                render()
+            }
+            actions.addView(call)
+            actions.addView(erase, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(20) })
+            dialer.addView(actions, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+            val scroll = object : ScrollView(owner) {
+                override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                    val width = MeasureSpec.getSize(widthMeasureSpec)
+                    val height = MeasureSpec.getSize(heightMeasureSpec)
+                    val density = resources.displayMetrics.density
+                    val simHeight = if (simBar.visibility == View.GONE) 0 else {
+                        simBar.measure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
+                        simBar.measuredHeight + dp(7)
+                    }
+                    val compact = height - simHeight - entryHeight - contactHeight < dp(48 * 4 + 5 * 3 + 52 + 32)
+                    val orientation = if (compact) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+                    if (numberRegion.orientation != orientation) {
+                        numberRegion.orientation = orientation
+                        numberRegion.gravity = Gravity.CENTER_VERTICAL
+                        entry.layoutParams = if (compact) LinearLayout.LayoutParams(0, entryHeight, 2f)
+                            else LinearLayout.LayoutParams(-1, entryHeight)
+                        contact.layoutParams = if (compact) LinearLayout.LayoutParams(0, contactHeight, 1f)
+                            else LinearLayout.LayoutParams(-1, contactHeight)
+                    }
+                    val topGap = dp(if (compact) 4 else 8)
+                    val actionGap = dp(if (compact) 8 else 12)
+                    (dialer.layoutParams as LinearLayout.LayoutParams).topMargin = topGap
+                    (actions.layoutParams as LinearLayout.LayoutParams).topMargin = actionGap
+                    upper.measure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
+                    val occupied = upper.measuredHeight + topGap + actionGap + dp(12)
+                    val metrics = keypadMetrics((width / density).toInt(), ((height - occupied) / density).toInt(), compact)
+                    for (key in keyViews) resize(key, dp(metrics.keyWidth), dp(metrics.keyHeight))
+                    gridRows.forEachIndexed { index, row ->
+                        val margin = if (index == gridRows.lastIndex) 0 else dp(metrics.rowGap)
+                        val params = row.layoutParams as LinearLayout.LayoutParams
+                        if (params.bottomMargin != margin) row.layoutParams = params.apply { bottomMargin = margin }
+                    }
+                    val callSize = dp(metrics.callSize)
+                    resize(call, callSize, callSize)
+                    super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+                }
+
+                override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+                    super.onLayout(changed, left, top, right, bottom)
+                    if (changed) scrollTo(0, (panel.height - height).coerceAtLeast(0))
+                }
+            }.apply {
+                isFillViewport = true
+                isVerticalScrollBarEnabled = false
+                addView(panel, FrameLayout.LayoutParams(-1, -2))
+            }
+            column.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+            canvas.addView(column, FrameLayout.LayoutParams(-1, -1))
+        }
+
+        private fun TextView.reservedLineHeight(): Int = paint.fontMetricsInt.let {
+            it.bottom - it.top + paddingTop + paddingBottom
+        }
+
+        private fun resize(view: View, width: Int, height: Int) {
+            val params = view.layoutParams
+            if (params.width != width || params.height != height) {
+                view.layoutParams = params.apply { this.width = width; this.height = height }
+            }
+        }
+
+        fun refresh() {
+            ussdButton.visibility = if (app.state.canUssd) View.VISIBLE else View.GONE
+            refreshNumber()
+            val sims = keypadSims()
+            val selected = keypadSim.resolve(sims.map { it.sub }, app.state.defaultSub)
+            val choices = sims.takeIf { it.size > 1 }.orEmpty()
+            simBar.visibility = if (choices.isEmpty()) View.GONE else View.VISIBLE
+            if (renderedSims == choices && renderedSelection == selected) return
+            renderedSims = choices
+            renderedSelection = selected
+            simBar.removeAllViews()
+            for (sim in choices) {
+                val active = sim.sub == selected
+                val slot = getString(R.string.sim_n, sim.slot + 1)
+                val detail = sim.carrier.ifEmpty { sim.name }.takeUnless { it == slot }.orEmpty()
+                val choice = row().apply {
+                    minimumHeight = dp(48)
+                    gravity = Gravity.CENTER
+                    if (active) background = InsetDrawable(linkViews.shape(KEYPAD_SELECTED, 22).apply {
+                        setStroke(dp(1), KEYPAD_ACCENT)
+                    }, 0, dp(3), 0, dp(3))
+                    setPaddingRelative(dp(8), dp(3), dp(8), dp(3))
+                    isSelected = active
+                    isFocusable = true
+                    contentDescription = listOf(slot, detail).filter { it.isNotBlank() }.joinToString(", ")
+                    setOnClickListener {
+                        if (keypadSims().any { it.sub == sim.sub }) keypadSim.select(sim.sub)
+                        refresh()
+                    }
+                    addView(ImageView(owner).apply {
+                        setImageResource(R.drawable.ic_keypad_sim)
+                        setColorFilter(Color.WHITE)
+                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }, LinearLayout.LayoutParams(dp(16), dp(16)).apply { marginEnd = dp(6) })
+                    addView(LinearLayout(owner).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(label(slot, size = 12f, bold = true).apply { setPadding(0, 0, 0, 0) })
+                        if (detail.isNotBlank()) addView(label(detail, size = 10f).apply {
+                            setPadding(0, 0, 0, 0)
+                            setSingleLine()
+                            ellipsize = TextUtils.TruncateAt.END
+                        })
+                    }, LinearLayout.LayoutParams(0, -2, 1f))
+                }
+                simBar.addView(choice, LinearLayout.LayoutParams(0, -1, 1f))
+            }
+        }
+
+        private fun refreshNumber() {
+            val value = number.toString()
+            val name = app.state.name(value).orEmpty()
+            entry.text = if (value.isEmpty()) "" else app.format(value)
+            entry.visibility = if (value.isEmpty()) View.INVISIBLE else View.VISIBLE
+            contact.text = name
+            contact.visibility = if (name.isEmpty()) View.INVISIBLE else View.VISIBLE
+            add.isEnabled = value.isNotEmpty() && name.isEmpty() && !UssdCodes.valid(value)
+            add.alpha = if (add.isEnabled) 1f else 0.45f
+            erase.isEnabled = value.isNotEmpty()
+            erase.alpha = if (erase.isEnabled) 1f else 0.45f
+        }
+
+        private fun numberKey(digit: String, letters: String) = LinearLayout(owner).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            background = circle(KEY_SURFACE)
+            contentDescription = digit
+            isFocusable = true
+            addView(label(digit, size = 23f, bold = true).apply {
+                includeFontPadding = false
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                setPadding(0, 0, 0, 0)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
+            if (letters.isNotEmpty()) addView(label(letters, size = 9f).apply {
+                includeFontPadding = false
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                setPadding(0, 0, 0, 0)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
+            setOnClickListener { number.append(digit); refreshNumber() }
+            if (digit == "0") setOnLongClickListener { number.append("+"); refreshNumber(); true }
+        }
+
+        private fun iconAction(res: Int, title: Int, size: Int, color: Int, tint: Int, action: () -> Unit) =
+            ImageButton(owner).apply {
+                setImageResource(res)
+                setColorFilter(tint)
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                background = circle(color)
+                contentDescription = getString(title)
+                layoutParams = LinearLayout.LayoutParams(dp(size), dp(size))
+                setOnClickListener { action() }
+            }
+
+        private fun circle(color: Int) = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+        }
     }
 
     /** The carrier-code screen, with [code] typed in (sent at once when it is a code) on SIM [sub]. */
     private fun openUssd(code: String, sub: Int?) {
         startActivity(Intent(this, UssdActivity::class.java).putExtra(UssdActivity.EXTRA_CODE, code).apply { sub?.let { putExtra(UssdActivity.EXTRA_SUB, it) } }
             .putExtra(UssdActivity.EXTRA_SEND, UssdCodes.valid(code)))
-    }
-
-    private fun updateKeypad() {
-        val n = number.toString()
-        keypadNumber.text = if (n.isEmpty()) "" else app.format(n)
-        val name = app.state.name(n)
-        keypadWho.text = name ?: ""
-        keypadBack.visibility = if (n.isEmpty()) View.INVISIBLE else View.VISIBLE
-        val code = UssdCodes.valid(n)
-        keypadAdd.visibility = if (n.isNotEmpty() && name == null && !code) View.VISIBLE else View.INVISIBLE
-        // Shown when the Android phone runs carrier codes (its builds with the phone tools say so in their status).
-        keypadUssd.visibility = if (app.state.canUssd) View.VISIBLE else View.GONE
-        // One green call button, or one per SIM labelled with its name.
-        keypadCalls.removeAllViews()
-        val sims = app.state.sims
-        val targets = if (sims.size > 1) sims.map { it.name.ifEmpty { getString(R.string.sim_n, it.slot + 1) } to it.sub }
-            else listOf(getString(R.string.call) to app.state.defaultSub)
-        for ((label, sub) in targets) keypadCalls.addView(roundAction(R.drawable.ic_call, label, R.color.ok) {
-            if (number.isEmpty()) return@roundAction
-            // A carrier code (*123#) on a call button: sent as USSD on that SIM, like a phone's own dialer does.
-            if (UssdCodes.valid(number.toString()) && app.state.canUssd) { openUssd(number.toString(), sub); number.clear(); updateKeypad(); return@roundAction }
-            app.dial(number.toString(), sub); number.clear(); updateKeypad()
-        }.apply { getChildAt(0).isEnabled = n.isNotEmpty() }, LinearLayout.LayoutParams(dp(112), -2))
     }
 
     // ------------------------------------------------------------------ Messages
@@ -824,6 +1053,7 @@ class MainActivity : Activity() {
     }
 
     private fun openLinkSection(section: LinkSection) {
+        if (tab != TAB_LINK) select(TAB_LINK)
         linkSection = section
         revealLinkSection = true
         linkTab()
@@ -1100,10 +1330,40 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        private val KEY_SURFACE = Color.rgb(27, 28, 29)
+        private val KEYPAD_ACCENT = Color.rgb(0, 199, 183)
+        private val KEYPAD_SELECTED = Color.rgb(3, 99, 94)
         private const val SELECTION_TAG = "selection"
         const val EXTRA_TAB = "tab"; const val EXTRA_NUMBER = "number"
         const val TAB_RECENTS = 0; const val TAB_CONTACTS = 1; const val TAB_KEYPAD = 2; const val TAB_MESSAGES = 3; const val TAB_LINK = 4
         private val TAB_NAMES = listOf(R.string.tab_recents, R.string.tab_contacts, R.string.tab_keypad, R.string.tab_messages, R.string.tab_link)
         private val TAB_ICONS = listOf(R.drawable.ic_link_recents, R.drawable.ic_link_contacts, R.drawable.ic_link_keypad, R.drawable.ic_link_messages, R.drawable.ic_link_chain)
+    }
+}
+
+internal data class KeypadMetrics(val keyWidth: Int, val keyHeight: Int, val rowGap: Int, val callSize: Int)
+
+/** Dimensions in dp after reserving measured space above and around the dialer. */
+internal fun keypadMetrics(availableWidth: Int, dialerHeight: Int, compact: Boolean = false): KeypadMetrics {
+    val slot = ((availableWidth - 16) / 3 - 8).coerceAtLeast(1)
+    val rowGap = if (compact) 3 else if (dialerHeight < 273) 5 else 8
+    val callSize = if (compact) 48 else if (dialerHeight < 273) 52 else 60
+    val heightBudget = (dialerHeight - callSize - 3 * rowGap) / 4
+    val height = minOf(heightBudget, availableWidth / 5).coerceIn(48, 64)
+    return KeypadMetrics(minOf(slot, height * 5 / 4), height, rowGap, callSize)
+}
+
+/** A Keypad-only choice. Resolving against fresh status never dials or persists a SIM. */
+internal class KeypadSimSelection {
+    private var temporary: Int? = null
+    val hasTemporarySelection get() = temporary != null
+
+    fun select(sub: Int) { temporary = sub }
+
+    fun clear() { temporary = null }
+
+    fun resolve(available: List<Int>, defaultSub: Int?): Int? {
+        if (available.size < 2 || temporary !in available) clear()
+        return temporary ?: defaultSub?.takeIf { it in available }
     }
 }
