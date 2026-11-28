@@ -923,10 +923,17 @@ class MainActivity : Activity() {
     private fun linkNetwork(connected: Boolean, status: String): View {
         val s = app.state
         val phone = linkViews.card(14)
-        val st = s.status.takeIf { connected && s.hasLiveStatus }
+        if (!connected) return phone.apply {
+            addView(label(getString(R.string.link_network), size = 18f, bold = true))
+            addView(label(status, R.color.muted, 14f))
+        }
+
+        val groups = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val st = s.status.takeIf { s.hasLiveStatus }
         val liveSims = if (st != null) s.sims else emptyList()
         phone.addView(label(getString(R.string.link_network), size = 18f, bold = true))
-        app.transport.takeIf { connected && it != "none" }?.let {
+        phone.addView(label(getString(R.string.network_host_connection), R.color.muted, 13f, bold = true))
+        app.transport.takeIf { it != "none" }?.let {
             phone.addView(label(getString(R.string.link_network_transport, it.uppercase()), R.color.muted, 13f))
         }
         // The Android phone cannot bridge call audio (Android 8-10, or its software gives none): calls stay on it.
@@ -942,62 +949,86 @@ class MainActivity : Activity() {
         for (sim in liveSims) {
             val line = listOfNotNull(sim.name.ifEmpty { getString(R.string.sim_n, sim.slot + 1) }, sim.carrier.takeIf { it.isNotEmpty() && it != sim.name },
                 if (sim.hasService) getString(R.string.link_sim_signal, sim.signal.coerceIn(0, 4), sim.net.orEmpty()).trim() else getString(R.string.no_service), if (sim.roaming) "R" else null).joinToString(" · ")
-            phone.addView(label(line, size = 14f))
+            phone.addView(linkViews.separator())
+            phone.addView(label(line, size = 14f).apply {
+                setPadding(0, dp(6), 0, dp(6))
+            })
         }
         st?.optJSONArray("clients")?.let { a ->
             val names = (0 until a.length()).map { a.getJSONObject(it) }.map { (if (it.optBoolean("self")) "● " else "○ ") + it.optString("name") + if (it.optBoolean("audio")) " ♪" else "" }
             if (names.size > 1) phone.addView(label(getString(R.string.clients, names.joinToString("  ")), R.color.muted, 13f))
         }
-        // Switches
-        if (connected) {
-            val net = s.net
-            val sw = phone
-            sw.addView(label(getString(R.string.switches).uppercase(), R.color.accent, 12f, bold = true))
-            val can = net?.optJSONObject("can")
-            fun toggle(title: Int, what: String, on: Boolean?, shown: Boolean = true) {
-                if (!shown) return
-                sw.addView(Switch(this).apply {
-                    text = getString(title); textSize = 16f; setTextColor(col(R.color.text)); isChecked = on == true
-                    isEnabled = on != null && s.netPending == null
-                    setPadding(0, dp(8), 0, dp(8))
-                    setOnCheckedChangeListener { _, v -> if (v != on) s.setNet(what, v) }
+        groups.addView(phone)
+        val net = s.net
+        val sw = linkViews.card(14)
+        groups.addView(sw)
+        sw.addView(label(getString(R.string.network_controls), size = 18f, bold = true))
+        s.netPending?.let { sw.addView(label(getString(R.string.waiting_for_phone), R.color.muted, 13f)) }
+        s.netError?.let { sw.addView(label(if (it == "no_answer") getString(R.string.err_no_answer) else it, R.color.warn, 13f)) }
+        val can = net?.optJSONObject("can")
+        var hasToggle = false
+        fun toggle(title: Int, what: String, on: Boolean?, shown: Boolean = true) {
+            if (!shown) return
+            if (hasToggle) sw.addView(linkViews.separator())
+            hasToggle = true
+            sw.addView(Switch(this).apply {
+                text = if (on == null) getString(R.string.network_value_unknown, getString(title)) else getString(title)
+                textSize = 16f; setTextColor(col(R.color.text)); isChecked = on == true
+                isEnabled = on != null && s.netPending == null
+                minHeight = dp(48)
+                setPaddingRelative(0, dp(8), 0, dp(8))
+                thumbTintList = android.content.res.ColorStateList(
+                    arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                    intArrayOf(col(R.color.muted), linkViews.accent, col(R.color.muted)),
+                )
+                setOnCheckedChangeListener { _, v -> if (v != on) s.setNet(what, v) }
+            })
+        }
+        fun current(key: String) = net?.opt(key) as? Boolean
+        toggle(R.string.mobile_data, "data", current("data"))
+        toggle(R.string.hotspot, "hotspot", current("hotspot"), can?.optBoolean("hotspot", true) ?: true)
+        toggle(R.string.bt_tethering, "bt", current("bt"), can?.optBoolean("bt", true) ?: true)
+        toggle(R.string.airplane, "airplane", current("airplane"))
+        toggle(R.string.share_vpn, "share", current("share"))
+        if (net?.optBoolean("vpn") == true) sw.addView(label(getString(R.string.vpn_up), R.color.ok, 13f))
+        net?.optJSONObject("proxy")?.optJSONArray("addrs")?.let { a ->
+            if (net.optBoolean("share")) for (i in 0 until a.length()) a.getJSONObject(i).let { ad ->
+                sw.addView(label("${ad.optString("kind")}: ${ad.optString("ip")}:${net.optJSONObject("proxy")?.optInt("port")}  ·  ${ad.optString("pac")}", R.color.muted, 12f).apply { setTextIsSelectable(true)
+                    textDirection = View.TEXT_DIRECTION_LTR
                 })
             }
-            fun current(key: String) = net?.opt(key) as? Boolean
-            toggle(R.string.mobile_data, "data", current("data"))
-            toggle(R.string.hotspot, "hotspot", current("hotspot"), can?.optBoolean("hotspot", true) ?: true)
-            toggle(R.string.bt_tethering, "bt", current("bt"), can?.optBoolean("bt", true) ?: true)
-            toggle(R.string.airplane, "airplane", current("airplane"))
-            toggle(R.string.share_vpn, "share", current("share"))
-            if (net?.optBoolean("vpn") == true) sw.addView(label(getString(R.string.vpn_up), R.color.ok, 13f))
-            net?.optJSONObject("proxy")?.optJSONArray("addrs")?.let { a ->
-                if (net.optBoolean("share")) for (i in 0 until a.length()) a.getJSONObject(i).let { ad ->
-                    sw.addView(label("${ad.optString("kind")}: ${ad.optString("ip")}:${net.optJSONObject("proxy")?.optInt("port")}  ·  ${ad.optString("pac")}", R.color.muted, 12f).apply { setTextIsSelectable(true) })
+        }
+        val sims = liveSims
+        if (sims.isNotEmpty()) {
+            val settings = linkViews.card(14)
+            groups.addView(settings)
+            settings.addView(label(getString(R.string.network_sim_settings), size = 18f, bold = true))
+            if (sims.size > 1 && net?.has("dataSub") == true) {
+                val dataSub = net.optInt("dataSub", -1)
+                settings.addView(label(getString(R.string.data_sim), size = 16f))
+                for (sim in sims) {
+                    val selected = sim.sub == dataSub
+                    settings.addView(button(sim.name.ifEmpty { getString(R.string.sim_n, sim.slot + 1) },
+                        if (selected) Look.FILLED else Look.TONAL) {
+                        if (!selected) s.setDataSim(sim.sub)
+                    }.apply { isEnabled = s.netPending == null; isSelected = selected })
                 }
             }
-            val sims = liveSims
-            if (sims.size > 1 && net?.has("dataSub") == true) {
-                val dataSub = net?.optInt("dataSub", -1) ?: -1
-                sw.addView(row(label(getString(R.string.data_sim), size = 16f).weight(), *sims.map { sim ->
-                    button(sim.name.ifEmpty { getString(R.string.sim_n, sim.slot + 1) }, if (sim.sub == dataSub) Look.FILLED else Look.TONAL) { if (sim.sub != dataSub) s.setDataSim(sim.sub) }.apply { isEnabled = s.netPending == null; isSelected = sim.sub == dataSub }
-                }.toTypedArray()))
-            }
             for (sim in sims) {
-                val mode = net?.optJSONArray("rat")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) }.firstOrNull { it.optInt("slot") == sim.slot }?.optString("mode") }
-                sw.addView(row(label(getString(R.string.network_mode, sim.name.ifEmpty { getString(R.string.sim_n, sim.slot + 1) }), size = 16f).weight(),
-                    button(mode ?: "–", Look.TONAL) {
-                        val modes = arrayOf("5G", "4G", "3G", "2G")
-                        AlertDialog.Builder(this).setItems(modes) { _, w -> s.setNetworkMode(sim.slot, modes[w]) }.show()
-                    }.apply { isEnabled = s.netPending == null && !mode.isNullOrBlank() }))
+                val mode = net?.optJSONArray("rat")?.let { a ->
+                    (0 until a.length()).map { a.getJSONObject(it) }
+                        .firstOrNull { it.optInt("slot") == sim.slot }?.optString("mode")
+                }
+                settings.addView(linkViews.separator())
+                settings.addView(label(getString(R.string.network_mode,
+                    sim.name.ifEmpty { getString(R.string.sim_n, sim.slot + 1) }), size = 16f))
+                settings.addView(button(mode ?: "–", Look.TONAL) {
+                    val modes = arrayOf("5G", "4G", "3G", "2G")
+                    AlertDialog.Builder(this).setItems(modes) { _, w -> s.setNetworkMode(sim.slot, modes[w]) }.show()
+                }.apply { isEnabled = s.netPending == null && !mode.isNullOrBlank() })
             }
-            s.netPending?.let { sw.addView(label(getString(R.string.waiting_for_phone), R.color.muted, 13f)) }
-            s.netError?.let { sw.addView(label(if (it == "no_answer") getString(R.string.err_no_answer) else it, R.color.warn, 13f)) }
-
         }
-
-
-        if (!connected) phone.addView(label(status, R.color.muted, 14f))
-        return phone
+        return groups
     }
 
     private fun linkDiagnostics(connected: Boolean): View {
