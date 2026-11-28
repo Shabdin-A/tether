@@ -1,6 +1,13 @@
 package app.tether.ui
 
 import android.Manifest
+import java.net.InetAddress
+import java.net.Inet4Address
+import app.tether.adb.LocalAdbPortProbe
+import android.widget.EditText
+import android.text.InputType
+import android.net.NetworkCapabilities
+import android.net.ConnectivityManager
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.role.RoleManager
@@ -48,6 +55,8 @@ class MainActivity : Activity() {
     private lateinit var root: LinearLayout
     private val main = Handler(Looper.getMainLooper())
     private var qrUntil = 0L
+    private var adbPortProbeRunning = false
+    private var adbPortReport: String? = null
     private var qrBitmap: Bitmap? = null
     private var qrLegacy = false
     private val listener: () -> Unit = { main.post { render() } }
@@ -176,6 +185,23 @@ class MainActivity : Activity() {
             Adb.showPairingNotification(this)
             runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
         })
+
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            if (!adbDone && app.prefs.getBoolean("adb_paired", false)) {
+                setup.addView(label(getString(R.string.adb_identity_recorded), R.color.muted, 13f))
+            }
+            setup.addView(button(getString(R.string.adb_port_probe), secondary = true) { promptForAdbPort() }
+                .apply { isEnabled = !adbPortProbeRunning })
+            if (adbPortProbeRunning) setup.addView(label(getString(R.string.adb_port_testing), R.color.muted, 13f))
+            adbPortReport?.let { report ->
+                setup.addView(label(report, R.color.muted, 13f).apply { setTextIsSelectable(true) })
+                setup.addView(button(getString(R.string.adb_copy_diagnostics), secondary = true) {
+                    getSystemService(android.content.ClipboardManager::class.java)
+                        .setPrimaryClip(android.content.ClipData.newPlainText(getString(R.string.adb_copy_diagnostics), report))
+                    Toast.makeText(this, R.string.copied, Toast.LENGTH_SHORT).show()
+                })
+            }
+        }
 
         // Legacy TCP adb: opt-in, for Android 10 (no Wireless debugging) or a phone without a trusted Wi-Fi network.
         val tcpOn = app.prefs.getBoolean(Adb.PREF_LEGACY, false)
@@ -319,6 +345,69 @@ class MainActivity : Activity() {
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
+    }
+
+    private fun promptForAdbPort() {
+        if (adbPortProbeRunning) return
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setHint(R.string.adb_port_hint)
+        }
+        val dialog = AlertDialog.Builder(this).setTitle(R.string.adb_port_probe)
+            .setMessage(R.string.adb_port_instructions).setView(input)
+            .setNegativeButton(android.R.string.cancel, null).setPositiveButton(R.string.adb_port_run, null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val port = LocalAdbPortProbe.parsePort(input.text.toString())
+                if (port == null) input.error = getString(R.string.adb_port_invalid)
+                else {
+                    dialog.dismiss()
+                    runAdbPortProbe(port)
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    @Suppress("DEPRECATION") // Include Wi-Fi even when a VPN or cellular network is Android's default.
+    private fun currentWifiAddress(): InetAddress? {
+        val manager = getSystemService(ConnectivityManager::class.java)
+        val addresses = manager.allNetworks.asSequence()
+            .filter { manager.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
+            .flatMap { manager.getLinkProperties(it)?.linkAddresses.orEmpty().asSequence() }
+            .map { it.address }
+            .filterNot { it.isLoopbackAddress || it.isAnyLocalAddress }
+            .toList()
+        return addresses.firstOrNull { it is Inet4Address } ?: addresses.firstOrNull()
+    }
+
+    private fun runAdbPortProbe(port: Int) {
+        adbPortProbeRunning = true
+        render()
+        Thread({
+            val results = LocalAdbPortProbe.run(port, currentWifiAddress())
+            val report = buildList {
+                add(getString(R.string.adb_port_report, port))
+                results.forEach { result ->
+                    val status = getString(when (result.status) {
+                        LocalAdbPortProbe.Status.OPEN -> R.string.adb_port_open
+                        LocalAdbPortProbe.Status.REFUSED -> R.string.adb_port_refused
+                        LocalAdbPortProbe.Status.TIMEOUT -> R.string.adb_port_timeout
+                        LocalAdbPortProbe.Status.ERROR -> R.string.adb_port_error
+                        LocalAdbPortProbe.Status.NO_ADDRESS -> R.string.adb_port_no_address
+                    })
+                    add(listOfNotNull(result.address, status, result.detail).joinToString(" · "))
+                }
+                add(getString(R.string.adb_port_tcp_only))
+            }.joinToString("\n")
+            runOnUiThread {
+                if (!isDestroyed) {
+                    adbPortReport = report
+                    adbPortProbeRunning = false
+                    render()
+                }
+            }
+        }, "adb-port-probe").start()
     }
 
     /** Explains the steps, then (on Enable) connects to adbd's TCP mode, grants what the app needs and starts the helper. */
