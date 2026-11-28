@@ -60,6 +60,7 @@ object HelperMain {
                     else if (args.size >= 3) println("set ${args[1]} ${args[2]}: ${Net.set(args[1], args[2] == "on") ?: "ok"}")
                     if (args.size >= 3) Thread.sleep(2500)
                     println(Net.state())
+                    println(Net.dataSources())
                 }
                 "serve" -> Server(args[1].toInt(), args[2]).serveForever()
                 else -> { System.err.println("unknown command"); exitProcess(2) }
