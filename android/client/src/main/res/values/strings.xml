@@ -225,4 +225,11 @@
     <string name="link_diagnostics_subtitle">Connection and logs</string>
     <string name="link_sim_signal">Cellular signal %1$d/4 %2$s</string>
     <string name="link_plugged">(plugged in)</string>
+    <string name="recents_subtitle">Call history from your phone</string>
+    <string name="recents_search">Search recent calls</string>
+    <string name="recents_loading">Loading call history…</string>
+    <string name="recents_empty">No recent calls</string>
+    <string name="recents_no_matches">No matching calls</string>
+    <string name="recents_error">Call history could not be loaded. See the message above for details.</string>
+    <string name="recents_offline">Connect to your Android phone to load call history.</string>
 </resources>
