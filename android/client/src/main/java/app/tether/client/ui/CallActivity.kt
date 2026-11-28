@@ -114,7 +114,8 @@ class CallActivity : Activity() {
             for (k in listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#")) grid.addView(dialKey(k, null, 64) {
                 app.calls.performDtmf(c.local, k)
             }, GridLayout.LayoutParams().apply { width = dp(64); height = dp(64); setMargins(dp(12), dp(6), dp(12), dp(6)) })
-            root.addView(grid)
+            // Its own width, so the column centres it: a full-width GridLayout keeps its keys at the left (#29).
+            root.addView(grid, LinearLayout.LayoutParams(-2, -2))
         }
         root.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
         val audio = app.telecom.audioState

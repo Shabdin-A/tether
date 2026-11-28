@@ -573,6 +573,7 @@ class MainActivity : Activity() {
             grid.addView(dialKey(k, sub, onLong = if (k == "0") ({ number.append("+"); updateKeypad() }) else null) { number.append(k); updateKeypad() },
                 GridLayout.LayoutParams().apply { width = dp(76); height = dp(76); setMargins(dp(10), dp(6), dp(10), dp(6)) })
         }
+        // Its own width, so the column centres it: a full-width GridLayout keeps its keys at the left (#29).
         box.addView(grid, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) })
         keypadCalls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER }
         box.addView(keypadCalls, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
