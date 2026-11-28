@@ -2,9 +2,48 @@
 
 ## Unreleased
 
-- Android phone: a multipart SMS is marked sent only after every part reports success, even if callbacks arrive
-  out of order. If a part fails, both clients receive that part's error.
-### Calls
+### Call audio and the link (#13, #14, #25, #26, #29)
+
+- Android phone, call audio: when the interception API's uplink does not open in a call (or opens routed somewhere
+  other than the call), Tether now tries every other way into the call before giving up: `telephony_tx` (in-call
+  music, also as a low-latency track where the normal one is sent elsewhere or gets no route) and, when neither opens,
+  `policy_mix`, each checked for where Android routes it. A `telephony_tx` track for which the phone reports no route
+  at all is used only when nothing else is routed to the call, as 1.1.0 used it; the capture's wait for the interception API no longer uses up the injection's; the
+  self-test's saved method comes first but no longer alone. On a Redmi Note 10 5G (MediaTek) 1.2.5 opened no injection
+  at all ("method -", 1076 of 1126 uplink frames dropped) where 1.1.0 had worked. A track the phone stops taking
+  during the call is replaced by the next method. The `call audio path:` line, and the call figures the iPhone keeps
+  (`inject …`), say which method was used, what was tried before it and why (#14).
+- Android phone, call audio: the link log says when the phone takes the injected voice clearly slower than real time
+  (`taken at about 14768 Hz instead of 16000 Hz`, as on a Poco X3 Pro whose far end heard nothing): the phone is then
+  probably not sending it into the call. Problem reports now also carry the audio system's own log lines about the
+  call's paths (mixer paths, use cases, voice PCM devices, vendor keys and mutes) and the voice-call volume (#14).
+- Android phone: the call volume is put back to its lowest step whenever it rises during a bridged call (a phone may
+  set it anew once the call has its audio). It matters most on Samsung phones with a Qualcomm chip (Galaxy A73, A52s),
+  where One UI 8 ignores the voice-call mute: the far end hears less of itself through the phone's open microphone.
+  The `call audio path:` line shows the volume, and the link log says when it had risen (#13, #25).
+- Android phone, Qualcomm phones (Xiaomi, Redmi, Poco, OnePlus, Samsung with a Qualcomm chip): **Muted** mutes the
+  phone's microphone through Android again when the call's voice goes in through the in-call music route
+  (`telephony_tx`): Qualcomm's audio system then mutes only the microphone, and the Galaxy A73's self-test heard the
+  iPhone's voice at full level with the mute on. Each call checks it until it held once and turns it off if your
+  voice stops reaching the call. With the other routes the microphone stays on as in 1.2.5. Try it if the other side
+  hears an echo of itself (#13, #25).
+- Link: the Android phone no longer asks the iPhone for a slower Bluetooth connection within 35 s of its previous
+  request, and never sends the same request twice in a row. On a Galaxy A73 every "balanced" request sent 9–15 s
+  after a call's start went unanswered, and the phone dropped the link 40 s later (Bluetooth status 34): in the middle
+  of the next call when it came soon, which looked like "audio stops when the screen locks" (#13).
+- Android phone: a bridged call now waits up to 10 s for its iPhone or Android client when the link drops mid-call
+  (it came back in about 6 s each time on the Galaxy A73) instead of handing the call to the phone's loud earpiece
+  for those seconds; the link log says so (#13).
+- Android phone, call audio without Wi-Fi (#26, #29): Android turns Wireless debugging off when the phone leaves
+  Wi-Fi and, with USB debugging off too, stops adb and the audio helper with it (a process started over adb cannot
+  leave adb's process group), so calls had no audio until Wi-Fi was back. The Call audio card now says when the helper
+  would stop with Wi-Fi and offers **Turn on USB debugging** (with it on, the helper keeps running without Wi-Fi;
+  checked on an Android 13 emulator), and says plainly when the helper cannot start because the phone is not on
+  Wi-Fi, pointing to TCP debugging. The iPhone (Link › Audio helper) and the Android client show the same notes
+  (status `helper.why` / `helper.needsWifi`); without Wi-Fi the app no longer retries the adb launch.
+
+### Calls (#13)
+
 - iPhone and Android client: a short vibration when the other side answers a call you placed (as the system Phone app
   does). It comes once per call, only for calls dialed on that device, and follows the device's own haptics / ringer
   settings (#13).
@@ -12,7 +51,9 @@
   turned off to hide the call pop-up while the iPhone or another client has the call. It is on by default; calls you
   answer or dial on the phone itself, and phones whose calls are not bridged, still show their screen, and the call
   notification stays (#13).
-- Docs: an interactive Persian installation guide (`docs/fa/install.html`: pick your phones, step checklists with saved progress, an error finder), thanks @sajjadmrx (#28). It is one self-contained dark page that loads nothing from other sites.
+
+### Android client (#27, thanks @hffygg; #29)
+
 - Android client: **calls in the Phone app**. Link › Calls › **Use the Phone app for calls** (on by default) makes the
   Android phone's SIMs calling accounts of this phone, one per SIM ("Tether · Work"): calls ring in the Phone app with
   its call screen and ringtone, can be dialed from its keypad, contacts and call history, and are logged there.
@@ -54,47 +95,19 @@
 - The iPhone app does not have the Recents, Messages, Starred and low-battery changes above yet; the Phone-app calling
   accounts are Android only (CallKit already rings in the iPhone's own call screen). USSD is on the iPhone under
   Link › Phone tools.
-- Android phone, call audio: when the interception API's uplink does not open in a call (or opens routed somewhere
-  other than the call), Tether now tries every other way into the call before giving up: `telephony_tx` (in-call
-  music, also as a low-latency track where the normal one is sent elsewhere or gets no route) and, when neither opens,
-  `policy_mix`, each checked for where Android routes it. A `telephony_tx` track for which the phone reports no route
-  at all is used only when nothing else is routed to the call, as 1.1.0 used it; the capture's wait for the interception API no longer uses up the injection's; the
-  self-test's saved method comes first but no longer alone. On a Redmi Note 10 5G (MediaTek) 1.2.5 opened no injection
-  at all ("method -", 1076 of 1126 uplink frames dropped) where 1.1.0 had worked. A track the phone stops taking
-  during the call is replaced by the next method. The `call audio path:` line, and the call figures the iPhone keeps
-  (`inject …`), say which method was used, what was tried before it and why (#14).
-- Android phone, call audio: the link log says when the phone takes the injected voice clearly slower than real time
-  (`taken at about 14768 Hz instead of 16000 Hz`, as on a Poco X3 Pro whose far end heard nothing): the phone is then
-  probably not sending it into the call. Problem reports now also carry the audio system's own log lines about the
-  call's paths (mixer paths, use cases, voice PCM devices, vendor keys and mutes) and the voice-call volume (#14).
-- Android phone: the call volume is put back to its lowest step whenever it rises during a bridged call (a phone may
-  set it anew once the call has its audio). It matters most on Samsung phones with a Qualcomm chip (Galaxy A73, A52s),
-  where One UI 8 ignores the voice-call mute: the far end hears less of itself through the phone's open microphone.
-  The `call audio path:` line shows the volume, and the link log says when it had risen (#13, #25).
-- Android phone, Qualcomm phones (Xiaomi, Redmi, Poco, OnePlus, Samsung with a Qualcomm chip): **Muted** mutes the
-  phone's microphone through Android again when the call's voice goes in through the in-call music route
-  (`telephony_tx`): Qualcomm's audio system then mutes only the microphone, and the Galaxy A73's self-test heard the
-  iPhone's voice at full level with the mute on. Each call checks it until it held once and turns it off if your
-  voice stops reaching the call. With the other routes the microphone stays on as in 1.2.5. Try it if the other side
-  hears an echo of itself (#13, #25).
-- Link: the Android phone no longer asks the iPhone for a slower Bluetooth connection within 35 s of its previous
-  request, and never sends the same request twice in a row. On a Galaxy A73 every "balanced" request sent 9–15 s
-  after a call's start went unanswered, and the phone dropped the link 40 s later (Bluetooth status 34): in the middle
-  of the next call when it came soon, which looked like "audio stops when the screen locks" (#13).
-- Android phone: a bridged call now waits up to 10 s for its iPhone or Android client when the link drops mid-call
-  (it came back in about 6 s each time on the Galaxy A73) instead of handing the call to the phone's loud earpiece
-  for those seconds; the link log says so (#13).
-- Android phone, call audio without Wi-Fi (#26, #29): Android turns Wireless debugging off when the phone leaves
-  Wi-Fi and, with USB debugging off too, stops adb and the audio helper with it (a process started over adb cannot
-  leave adb's process group), so calls had no audio until Wi-Fi was back. The Call audio card now says when the helper
-  would stop with Wi-Fi and offers **Turn on USB debugging** (with it on, the helper keeps running without Wi-Fi;
-  checked on an Android 13 emulator), and says plainly when the helper cannot start because the phone is not on
-  Wi-Fi, pointing to TCP debugging. The iPhone (Link › Audio helper) and the Android client show the same notes
-  (status `helper.why` / `helper.needsWifi`); without Wi-Fi the app no longer retries the adb launch.
+
+### Texts, docs and switches
+
+- Android phone: a multipart SMS is marked sent only after every part reports success, even if callbacks arrive
+  out of order. If a part fails, both clients receive that part's error.
+- Docs: an interactive Persian installation guide (`docs/fa/install.html`: pick your phones, step checklists with saved progress, an error finder), thanks @sajjadmrx (#28). It is one self-contained dark page that loads nothing from other sites.
 - Android phone, mobile data switch (#14): the state is read from the phone service for the data SIM, then that SIM's
   own setting (`mobile_data<sub>`), then the global one. Some dual-SIM phones on custom ROMs (Poco X3 Pro) never
   update the global setting, so data turned on from the iPhone kept showing off. After a switch the reply waits up to
   3 s for the new state.
+
+- Coming from 1.1.0: uninstall the 1.1.0 Android app first (1.2 APKs are signed with the project's release key), then
+  pair again.
 
 ## 1.2.5 — 2026-11-25
 
