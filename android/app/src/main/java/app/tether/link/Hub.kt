@@ -955,7 +955,8 @@ class Hub(private val app: TetherApp) : ConnectionListener {
             h.optJSONObject("uplink")?.optString("state") ?: "–",
             (h.optJSONObject("mic")?.takeIf { it.has("mode") }?.let { m -> "${m.optString("mode")} ${m.optString("state")}" + (m.optString("verdict").takeIf { it.isNotEmpty() }?.let { " ($it)" } ?: "") +
                 (if (m.optString("state") != "on" && m.optString("state") != "waiting") (if (h.optJSONObject("uplink")?.optBoolean("micMuted") == true) ", then muted by the vendor key" else ", then open") else "") }
-                ?: h.optJSONObject("uplink")?.let { if (it.optBoolean("micMuted")) "muted" + (if (it.optBoolean("kept")) " (kept: vendor key trusted)" else "") else if (it.optBoolean("unmuted")) "unmuted by the check" else "not muted" } ?: "–"))
+                ?: h.optJSONObject("uplink")?.let { if (it.optBoolean("micMuted")) "muted" + (if (it.optBoolean("kept")) " (kept: vendor key trusted)" else "") else if (it.optBoolean("unmuted")) "unmuted by the check" else "not muted" } ?: "–")) +
+            CallAudioReport.injectSummary(h)
 
         // ---------------------------------------------------------- the phone's own microphone (issue #2)
 

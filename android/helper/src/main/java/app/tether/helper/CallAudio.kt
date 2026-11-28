@@ -179,16 +179,41 @@ object CallAudio {
 
     // ---------------------------------------------------------------- inject
 
-    /** Opens an uplink injection; [bufferMs] caps the playback buffer (what the uplink waits in it at most). */
+    /**
+     * Opens an uplink injection; [bufferMs] caps the playback buffer (what the uplink waits in it at most). The track is
+     * playing when this returns, and Android has had [ROUTE_WAIT_MS] to report its route ([Inject.routedType]: the
+     * caller judges it, see [InjectChoice]). A `telephony_tx` track routed anywhere but Telephony Tx is never returned.
+     */
     fun openInject(method: String, rate: Int, bufferMs: Int = 40): Inject {
+        if (method != "telephony_tx") return openInjectOnce(method, rate, bufferMs, lowLatency = false)
+        // No low-latency (fast) track first: some Qualcomm HALs refuse a fast track on Telephony Tx and the policy then
+        // plays it on the phone's own speaker instead (issue #15). Where the normal track is sent elsewhere, or Android
+        // reports no route for it, the fast track (what 1.1.0 used, issue #14) gets the same check.
+        val normal = try { openInjectOnce(method, rate, bufferMs, lowLatency = false) } catch (e: MisroutedException) {
+            return try { openInjectOnce(method, rate, bufferMs, lowLatency = true) } catch (f: MisroutedException) {
+                throw MisroutedException("${e.message}; the low-latency track too: ${f.message}")
+            }
+        }
+        if (normal.routedType() >= 0) return normal
+        normal.stop()
+        // Routed to Telephony Tx (a wrong route throws), or no route reported either: then played as 1.1.0 played it.
+        return runCatching { openInjectOnce(method, rate, bufferMs, lowLatency = true) }.getOrNull()
+            ?: openInjectOnce(method, rate, bufferMs, lowLatency = false)
+    }
+
+    /** A `telephony_tx` track that Android routed somewhere other than the call's uplink (already released). */
+    class MisroutedException(msg: String) : IllegalStateException(msg)
+
+    /** How long a just-started track may take before Android reports its route. */
+    const val ROUTE_WAIT_MS = 500L
+
+    private fun openInjectOnce(method: String, rate: Int, bufferMs: Int, lowLatency: Boolean): Inject {
         var policy: Any? = null
         val track: AudioTrack = when (method) {
             "intercept" -> AudioManager::class.java
                 .getMethod("getCallUplinkInjectionAudioTrack", AudioFormat::class.java)
                 .invoke(am, outFormat(rate)) as AudioTrack
-            // No low-latency (fast) track here: some Qualcomm HALs refuse a fast track on Telephony Tx and the policy then
-            // plays it on the phone's own speaker instead, which nothing else would notice (issue #15).
-            "telephony_tx" -> buildTrack(rate, AudioAttributes.USAGE_MEDIA, lowLatency = false).also { t ->
+            "telephony_tx" -> buildTrack(rate, AudioAttributes.USAGE_MEDIA, lowLatency = lowLatency).also { t ->
                 val dev = telephonyDevice(true) ?: run { t.release(); error("no telephony output device") }
                 if (!t.setPreferredDevice(dev)) { t.release(); error("setPreferredDevice refused") }
             }
@@ -209,14 +234,13 @@ object CallAudio {
         track.play()
         val p = policy
         // The track is routed once it plays: Telephony Tx asked for and anything else granted means the iPhone's voice
-        // would play on this phone instead of going into the call.
-        if (method == "telephony_tx") {
-            val type = awaitRoute(track)
-            if (type != AudioDeviceInfo.TYPE_TELEPHONY) {
-                val to = track.routedDevice?.let { "${it.type}:${it.productName}" } ?: "nothing"
-                runCatching { track.stop() }; track.release()
-                error("routed to $to, not to the call (Telephony Tx)")
-            }
+        // would play on this phone instead of going into the call. No route reported (issue #14) is not refused here:
+        // the caller uses such a track only when no other method is routed to the call.
+        val type = awaitRoute(track)
+        if (method == "telephony_tx" && type >= 0 && type != AudioDeviceInfo.TYPE_TELEPHONY) {
+            val to = track.routedDevice?.let { "${it.type}:${it.productName}" } ?: "nothing"
+            runCatching { track.stop() }; track.release()
+            throw MisroutedException("routed to $to, not to the call (Telephony Tx)${if (lowLatency) " (low-latency track)" else ""}")
         }
         return object : Inject {
             override val name = method
@@ -265,7 +289,7 @@ object CallAudio {
     }
 
     /** The device type a just-started track is routed to, waiting up to [ms] for the policy to route it (-1: none). */
-    private fun awaitRoute(track: AudioTrack, ms: Long = 300): Int {
+    private fun awaitRoute(track: AudioTrack, ms: Long = ROUTE_WAIT_MS): Int {
         val end = System.currentTimeMillis() + ms
         while (true) {
             val t = track.routedDevice?.type
@@ -388,7 +412,8 @@ object CallAudio {
                 val routedCall = inj.routedType() == AudioDeviceInfo.TYPE_TELEPHONY
                 r.put("ok", ok).put("routedToCall", routedCall).put("note", "tone/base=%.1f routed=%s%s%s".format(ratio, inj.routedTo(),
                     if (routedCall) "" else " (NOT the call's uplink: the far end cannot hear this)", delayMs?.let { " delay≈$it ms" } ?: ""))
-                if (ok && chosen == null) chosen = m
+                // Never a track Android plays elsewhere: the phone's own mic may hear the tone from its speaker.
+                if (ok && chosen == null && InjectChoice.route(inj.routedType(), testLine = false) != InjectChoice.Route.ELSEWHERE) chosen = m
             } catch (t: Throwable) {
                 r.put("ok", false).put("note", describe(t))
             } finally {
@@ -510,6 +535,17 @@ object CallAudio {
         am.adjustStreamVolume(AudioManager.STREAM_VOICE_CALL, if (on) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE, 0)
         streamMuted = on
     }
+
+    /**
+     * The voice-call stream as AudioService has it now (INFO `voiceVolume`, Diag): index, its minimum and maximum, and
+     * whether it is muted. Issue #13: on Samsung's Qualcomm phones (One UI 8) the stream reads muted while the earpiece
+     * still plays; the index says whether the app's lowering to the minimum held.
+     */
+    fun voiceVolume(): JSONObject = runCatching {
+        val s = AudioManager.STREAM_VOICE_CALL
+        JSONObject().put("index", am.getStreamVolume(s)).put("min", if (Build.VERSION.SDK_INT >= 28) am.getStreamMinVolume(s) else 0)
+            .put("max", am.getStreamMaxVolume(s)).put("muted", am.isStreamMute(s))
+    }.getOrElse { JSONObject().put("error", describe(it)) }
 
     /** Result of [localCallAudio]: what was done, and whether every key was accepted. */
     data class Local(val note: String, val ok: Boolean)

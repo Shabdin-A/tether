@@ -334,6 +334,8 @@ object HelperMain {
             val capOrder = cfg.optString("capture", "auto").let { if (it == "auto") CallAudio.captureMethods else listOf(it) }
             val injOrder = UplinkRoutes.fixedOrAuto(cfg.optString("inject", "auto"), CallAudio.injectMethods)
             val injectMs = cfg.optInt("injectMs", 40)
+            this.injectMs = injectMs
+            injectTried.clear(); injectOrder = emptyList(); injectWhy = ""; injectSwitched = null; startErrors = JSONArray()
             startId = cfg.opt("id") ?: JSONObject.NULL
             callActive = cfg.optBoolean("active", true)
             activeSinceMs = if (callActive) System.currentTimeMillis() else -1
@@ -365,24 +367,21 @@ object HelperMain {
                 val waitedMode = CallAudio.audioMode()
                 while (running && callGen == gen && !gate.ready(CallAudio.audioMode(), activeForMs())) Thread.sleep(30)
                 if (!running || callGen != gen) return@Thread
-                fun <T> open(order: List<String>, kind: String, f: (String) -> T): T? {
-                    for (m in order) {
-                        while (running && callGen == gen) {
-                            try { return f(m) } catch (t: Throwable) {
-                                val msg = CallAudio.describe(t)
-                                // Polled often: every ms here delays both directions' first audio.
-                                if (gate.retry(m, msg, CallAudio.audioMode(), System.currentTimeMillis(), activeForMs())) { Thread.sleep(30); continue }
-                                errors.put("$kind:$m $msg"); break
-                            }
-                        }
-                    }
-                    return null
-                }
-                val cap = open(capOrder, "capture") { CallAudio.openCapture(it, rate) }
-                val inj = open(injOrder, "inject") { CallAudio.openInject(it, rate, injectMs) }
+                // Each direction has its own grace for the interception API (a slow capture used to leave the
+                // injection none, issue #14), and every inject method is tried until one is routed to the call.
+                val errs = ArrayList<String>()
+                val cap = PathOpener<Capture>("capture", OpenGate(), openEnv(gen), open = { CallAudio.openCapture(it, rate) },
+                    close = { it.stop() }, describe = CallAudio::describe).run(capOrder, errs)?.path
+                val injOpener = injectOpener(gen, rate, injectMs)
+                val opened = injOpener.run(injOrder, errs)
+                val inj = opened?.path
+                errs.forEach { errors.put(it) }
                 if (!tryLockFor(gen)) { cap?.stop(); inj?.stop(); return@Thread }
                 try {
                     capture = cap; inject = inj
+                    injectTried.clear(); injectTried.addAll(injOpener.tried); injectOrder = injOrder
+                    injectWhy = opened?.why ?: (if (injOrder.isEmpty()) "no inject method on this Android version" else "none opened: " + errs.filter { it.startsWith("inject:") }.joinToString("; "))
+                    if (inj != null) ShellEnv.log("inject ${inj.name}: $injectWhy")
                     cap?.let { c -> halts.add { c.halt() } }
                     inj?.let { i -> halts.add { i.halt() } }
                     stats.openWaitMs = System.currentTimeMillis() - t0
@@ -392,20 +391,91 @@ object HelperMain {
                     startStreams(rate, gen)
                     pathsOpen = true
                     applyMic(rate)
-                    val routedCall = inj?.let { CallAudio.routedToCall(it.routedType(), testLine) }
-                    info(JSONObject().put("id", startId).put("capture", cap?.name ?: JSONObject.NULL).put("inject", inj?.name ?: JSONObject.NULL)
-                        .put("testLineFarEnd", farEnd).put("routed", inj?.routedTo() ?: JSONObject.NULL).put("routedToCall", routedCall ?: JSONObject.NULL)
-                        .put("interceptInjectDead", CallAudio.interceptInjectDead)
-                        .put("openWaitMs", stats.openWaitMs).put("openMode", MicPath.Mode.name(CallAudio.audioMode())).put("active", callActive)
-                        .put("earpiece", localNote).put("silent", LocalMutes.silent(plan, localOk, guard?.state == RedirectGuard.State.ON))
-                        .put("mic", micJson())
-                        .put("silence", CallAudio.silence.name.lowercase()).put("telecomMicMute", plan.telecomMic).put("errors", errors)
-                        .put("uplink", uplinkJson(uplinkWhy()))
-                        .put("buffers", JSONObject().put("captureFrames", cap?.bufferFrames() ?: 0)
-                            .put("injectFrames", inj?.bufferFrames() ?: 0).put("injectLatencyMs", inj?.latencyMs() ?: -1)))
+                    startErrors = errors
+                    info(startInfo())
                     ShellEnv.log("call paths open after ${stats.openWaitMs} ms (waited in ${MicPath.Mode.name(waitedMode)}): capture ${cap?.name} inject ${inj?.name}")
                 } finally { audioLock.unlock() }
             }, "open").apply { start() })
+        }
+
+        /** This call's start errors (every method that failed), for [startInfo]. */
+        @Volatile private var startErrors = JSONArray()
+        /** The inject methods this call may use, those tried so far, and why the one in use was chosen (INFO `injectWhy`). */
+        @Volatile private var injectOrder: List<String> = emptyList()
+        private val injectTried = java.util.concurrent.CopyOnWriteArrayList<String>()
+        @Volatile private var injectWhy = ""
+        /** A newer injection replaced a dead one during this call (INFO `injectSwitched`). */
+        @Volatile private var injectSwitched: String? = null
+
+        /** The start INFO (the app logs it as "call audio path: …"); sent again when the injection changes mid-call. */
+        private fun startInfo(): JSONObject {
+            val cap = capture; val inj = inject
+            val routedCall = inj?.let { CallAudio.routedToCall(it.routedType(), testLine) }
+            return JSONObject().put("id", startId).put("capture", cap?.name ?: JSONObject.NULL).put("inject", inj?.name ?: JSONObject.NULL)
+                .put("testLineFarEnd", farEnd).put("routed", inj?.routedTo() ?: JSONObject.NULL).put("routedToCall", routedCall ?: JSONObject.NULL)
+                .put("injectWhy", injectWhy).apply { injectSwitched?.let { put("injectSwitched", it) } }
+                .put("interceptInjectDead", CallAudio.interceptInjectDead)
+                .put("openWaitMs", stats.openWaitMs).put("openMode", MicPath.Mode.name(CallAudio.audioMode())).put("active", callActive)
+                .put("earpiece", localNote).put("silent", LocalMutes.silent(plan, localOk, guard?.state == RedirectGuard.State.ON))
+                .put("voiceVolume", CallAudio.voiceVolume())
+                .put("mic", micJson())
+                .put("silence", CallAudio.silence.name.lowercase()).put("telecomMicMute", plan.telecomMic).put("errors", startErrors)
+                .put("uplink", uplinkJson(uplinkWhy()))
+                .put("buffers", JSONObject().put("captureFrames", cap?.bufferFrames() ?: 0)
+                    .put("injectFrames", inj?.bufferFrames() ?: 0).put("injectLatencyMs", inj?.latencyMs() ?: -1))
+        }
+
+        private fun openEnv(gen: Int) = object : PathOpener.Env {
+            override fun alive() = running && callGen == gen
+            override fun mode() = CallAudio.audioMode()
+            override fun nowMs() = System.currentTimeMillis()
+            override fun activeForMs() = this@Server.activeForMs()
+            override fun sleep(ms: Long) = Thread.sleep(ms)
+        }
+
+        /** The injection side: every method judged by where Android routed its track (InjectChoice). */
+        private fun injectOpener(gen: Int, rate: Int, injectMs: Int) = PathOpener<Inject>("inject", OpenGate(), openEnv(gen),
+            open = { CallAudio.openInject(it, rate, injectMs) }, close = { it.stop() },
+            // The test line (VoIP, no network behind it) keeps the interception track as before: its far end is simulated.
+            judge = { m, i -> (if (testLine && m == "intercept") InjectChoice.Verdict.KEEP else InjectChoice.judge(m, InjectChoice.route(i.routedType(), testLine))) to "routed ${i.routedTo()}" },
+            describe = CallAudio::describe, onlyIfNothingElse = setOf("policy_mix"))
+
+        @Volatile private var injectMs = 40
+
+        /**
+         * The injection this call uses is not taken by the phone (its play position stands still while audio waits,
+         * PathWatch): move the uplink to the next method not tried yet this call (issue #14), with the same route check.
+         * Runs on its own thread; the up thread follows [inject]. False when nothing else is left to try.
+         */
+        private fun switchInject(gen: Int, why: String): Boolean {
+            val rest = injectOrder.filter { it !in injectTried }
+            if (rest.isEmpty()) return false
+            Thread({
+                if (!tryLockFor(gen)) return@Thread
+                try {
+                    val old = inject ?: return@Thread
+                    inject = null
+                    old.halt(); old.stop()
+                    val errs = ArrayList<String>()
+                    val o = injectOpener(gen, rate, injectMs)
+                    var opened = o.run(rest, errs)
+                    injectTried.addAll(o.tried.filter { it !in injectTried })
+                    // Nothing else opened: back to the old method (stuck it may be, but it is all this phone has).
+                    if (opened == null) opened = injectOpener(gen, rate, injectMs).run(listOf(old.name), errs)
+                    val inj = opened?.path
+                    inject = inj
+                    inj?.let { i -> halts.add { i.halt() } }
+                    injectSwitched = "${old.name} → ${inj?.name ?: "none"}: $why"
+                    injectWhy = opened?.why ?: "none opened: " + errs.joinToString("; ")
+                    errs.forEach { startErrors.put(it) }
+                    ShellEnv.log("inject switched ${old.name} → ${inj?.name}: $why; ${injectWhy}")
+                    // The mic plan follows the track: a redirect mode needs the interception API's, Android's mute on
+                    // Qualcomm the in-call music one (LocalMutes).
+                    applyMic(rate)
+                    info(startInfo())
+                } finally { audioLock.unlock() }
+            }, "inject-switch").apply { start() }
+            return true
         }
 
         @Volatile private var farEnd = false
@@ -490,7 +560,7 @@ object HelperMain {
                         far.stop()
                     }
             }, "far-end").apply { start() })
-            inject?.let { inj ->
+            if (inject != null) {
                 threads.add(Thread({
                     // No silence padding: an underrunning AudioTrack plays silence by itself, while padded
                     // silence would sit in the buffer and push every later frame back. The buffer corrects the delay
@@ -498,12 +568,16 @@ object HelperMain {
                     audioPriority("up")
                     var writes = 0
                     var epoch = activeEpoch
+                    var last: Inject? = null
                     while (running && callGen == gen) {
                         val buf = up
                         val s = buf.take(100) ?: continue
                         if (epoch != activeEpoch) { epoch = activeEpoch; writes = 0 }
                         if (s.isEmpty()) continue   // a quiet frame cut whole
-                        try { inj.write(s) } catch (e: Exception) { break }
+                        // The track in use (switchInject may replace a dead one; none for a moment while it does).
+                        val inj = inject ?: continue
+                        if (inj !== last) { if (last != null) { writes = 0; stats.injectClock.reset() }; last = inj }
+                        try { inj.write(s) } catch (e: Exception) { if (inject === inj) break else continue }
                         stats.upWrites++
                         val level = CallAudio.rms(s, s.size)
                         meter.add(level)
@@ -523,20 +597,35 @@ object HelperMain {
             val w = PathWatch(testLine)
             threads.add(Thread({
                 var lastPlayed = -1L; var lastWrites = 0
+                var lastInj: Inject? = null
+                var slowSaid = false
                 watchMeter.take()
                 while (running && callGen == gen) {
                     repeat(10) { if (running && callGen == gen) Thread.sleep(100) }
                     if (!running || callGen != gen) break
                     val (df, dnz) = watchMeter.take()
                     val inj = inject
+                    if (inj !== lastInj) { if (lastInj != null) w.rearmUplink(); lastInj = inj; lastPlayed = -1 }
                     val played = inj?.playedFrames() ?: -1
                     val delta = if (played >= 0 && lastPlayed >= 0) played - lastPlayed else -1
                     lastPlayed = played
                     val writes = stats.upWrites
                     val waiting = inj != null && (writes > lastWrites || up.size > 0)
                     lastWrites = writes
+                    // The track taken clearly slower than real time over 10 s of the active call (issue #14): said once.
+                    if (!slowSaid && !testLine && inj != null && activeForMs() >= 10_000) {
+                        val hz = stats.injectClock.hz()
+                        if (PathWatch.slowInject(hz, rate)) {
+                            slowSaid = true
+                            val text = PathWatch.slowText(inj.name, inj.routedTo(), hz, rate)
+                            ShellEnv.log("path: $text"); autoDiag("up-slow")
+                            info(JSONObject().put("path", JSONObject().put("event", "up-slow").put("note", text)))
+                        } else if (hz > 0) slowSaid = true
+                    }
                     val e = w.second(PathWatch.Second(callActive, df, dnz, waiting, delta)) ?: continue
-                    val text = PathWatch.text(e, capture?.name, inj?.name, inj?.routedTo())
+                    var text = PathWatch.text(e, capture?.name, inj?.name, inj?.routedTo())
+                    // A track nobody takes: try the next inject method (not on the test line, whose far end is simulated).
+                    if (e == PathWatch.Event.UP_STUCK && !testLine && switchInject(gen, "its play position stood still")) text += "; trying the next inject method"
                     ShellEnv.log("path: $text")
                     // While the record and track are still open: is Android silencing them, or does the phone deliver nothing?
                     autoDiag(e.wire)
@@ -882,7 +971,8 @@ object HelperMain {
         private fun stop() {
             if (running && pathsOpen) autoDiag("call-end")
             if (running) info(JSONObject().put("stats", stats.json(rate, up).put("injectUnderruns", inject?.underruns() ?: -1)
-                .put("injectBufferFrames", inject?.bufferFrames() ?: -1).put("uplink", uplinkJson()).put("mic", micJson())))
+                .put("injectBufferFrames", inject?.bufferFrames() ?: -1).put("uplink", uplinkJson()).put("mic", micJson())
+                .put("inject", inject?.name ?: JSONObject.NULL).put("injectWhy", injectWhy).apply { injectSwitched?.let { put("injectSwitched", it) } }))
             running = false
             callGen++
             checkGen++
