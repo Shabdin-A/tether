@@ -162,4 +162,21 @@ internal class LinkViews(private val context: Context) {
         }
     }
 
+    fun tab(res: Int, title: String, active: Boolean, badge: Int, onClick: () -> Unit) = column().apply {
+        val tint = if (active) accent else Color.WHITE
+        gravity = Gravity.CENTER
+        minimumHeight = context.dp(58)
+        setPadding(context.dp(2), context.dp(7), context.dp(2), context.dp(7))
+        background = shape(if (active) Color.rgb(4, 40, 43) else Color.TRANSPARENT, 16)
+        addView(horizontal().apply {
+            gravity = Gravity.CENTER
+            addView(icon(res, 24, tint))
+            if (badge > 0) addView(text(badge.toString(), 10f, accent, bold = true))
+        })
+        addView(text(title, 12f, tint).apply { gravity = Gravity.CENTER })
+        contentDescription = if (badge > 0) "$title, $badge" else title
+        isSelected = active
+        isFocusable = true
+        setOnClickListener { onClick() }
+    }
 }
