@@ -225,4 +225,24 @@
     <string name="link_diagnostics_subtitle">Connection and logs</string>
     <string name="link_sim_signal">Cellular signal %1$d/4 %2$s</string>
     <string name="link_plugged">(plugged in)</string>
+    <string name="contacts_default_badge">Default</string>
+    <string name="contacts_detail_back">Back</string>
+    <string name="contacts_detail_more">Contact options</string>
+    <string name="contacts_detail_message">Message</string>
+    <string name="contacts_detail_favourite">Favourite</string>
+    <string name="contacts_detail_numbers">Phone numbers</string>
+    <string name="contacts_detail_about">About</string>
+    <string name="contacts_detail_name">Contact name</string>
+    <string name="contacts_detail_no_numbers">No phone numbers</string>
+    <string name="contacts_detail_number_actions">Phone number options</string>
+    <string name="contacts_subtitle">Your phone contacts</string>
+    <string name="contacts_search">Search contacts</string>
+    <string name="contacts_favorites">Favorites</string>
+    <string name="contacts_detail_mobile">Mobile</string>
+    <string name="contacts_detail_home">Home</string>
+    <string name="contacts_detail_work">Work</string>
+    <string name="contacts_detail_main">Main</string>
+    <string name="contacts_detail_other">Other</string>
+    <string name="contacts_choose_number">Choose a number</string>
+    <string name="contacts_choose_call_for">Select a number to call %1$s</string>
 </resources>

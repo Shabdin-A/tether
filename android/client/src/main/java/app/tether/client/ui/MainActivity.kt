@@ -47,6 +47,7 @@ class MainActivity : Activity() {
     private lateinit var content: FrameLayout
     private lateinit var banner: LinearLayout
     private lateinit var status: TextView
+    private lateinit var legacyHeader: LinearLayout
     private lateinit var viewport: ClientTabViewport
     private lateinit var tabBar: LinearLayout
     private var tabAppearance: Triple<Int, Int, Int>? = null
@@ -67,11 +68,11 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         tab = savedInstanceState?.getInt("tab") ?: if (app.identity.isPaired) TAB_RECENTS else TAB_LINK
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(col(R.color.background)) }
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(6)) }
-        header.addView(label(getString(R.string.app_name), size = 22f, bold = true).weight())
+        legacyHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(6)) }
+        legacyHeader.addView(label(getString(R.string.app_name), size = 22f, bold = true).weight())
         status = label("", R.color.muted, 13f)
-        header.addView(status)
-        root.addView(header)
+        legacyHeader.addView(status)
+        root.addView(legacyHeader)
         banner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), 0) }
         root.addView(banner)
         viewport = ClientTabViewport(this)
@@ -92,6 +93,7 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); handleIntent(intent) }
 
     private fun handleIntent(i: Intent?) {
+        closeContactDetails()
         i?.getIntExtra(EXTRA_TAB, -1)?.takeIf { it >= 0 }?.let { tab = it }
         i?.getStringExtra(EXTRA_NUMBER)?.let { number = StringBuilder(dialable(it)); tab = TAB_KEYPAD }
         listTab = -1
@@ -128,6 +130,7 @@ class MainActivity : Activity() {
     }
 
     private fun select(i: Int) {
+        closeContactDetails()
         if (tab == TAB_RECENTS && i != TAB_RECENTS) app.state.markRecentsSeen()
         tab = i; query = ""; listTab = -1
         if (picked != null || pickedChats != null) { picked = null; pickedChats = null; watchBack(false) }
@@ -146,6 +149,7 @@ class MainActivity : Activity() {
             else -> getString(R.string.state_connecting)
         }
         status.setTextColor(col(if (app.linkState == BleCentral.State.CONNECTED) R.color.ok else R.color.muted))
+        legacyHeader.visibility = if (tab == TAB_CONTACTS) View.GONE else View.VISIBLE
         viewport.bounded = tab != TAB_LINK
         renderTabBar(s.unreadTotal, s.missedCount)
         renderBanner()
@@ -366,7 +370,7 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33) {
             val d = onBackInvokedDispatcher
             if (on && backWhilePicking == null) {
-                val cb = android.window.OnBackInvokedCallback { stopPicking() }
+                val cb = android.window.OnBackInvokedCallback { if (contactDetails != null) closeContactDetails() else stopPicking() }
                 d.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb); backWhilePicking = cb
             } else if (!on) (backWhilePicking as? android.window.OnBackInvokedCallback)?.let { d.unregisterOnBackInvokedCallback(it); backWhilePicking = null }
         }
@@ -374,7 +378,8 @@ class MainActivity : Activity() {
 
     @Deprecated("Android 12 and older; newer ones use watchBack()")
     override fun onBackPressed() {
-        if (picked != null || pickedChats != null) stopPicking() else @Suppress("DEPRECATION") super.onBackPressed()
+        if (contactDetails != null) closeContactDetails()
+        else if (picked != null || pickedChats != null) stopPicking() else @Suppress("DEPRECATION") super.onBackPressed()
     }
 
     /** [a] with [f] of [b] mixed in (opaque: the list's rows sit on the page). */
@@ -516,18 +521,68 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ Contacts
 
+    private lateinit var contactsView: ContactsView
+    private var contactDetails: ContactDetailsView? = null
+    private var detailedContactId: Long? = null
+
     private fun contacts() {
-        val s = app.state
-        val all = s.contacts.filter { Search.matches(query, listOf(it.name), it.phones.map { p -> p.n }) }
-        val favs = if (query.isBlank()) all.filter { it.starred } else emptyList()
-        val items = ArrayList<Any>()
-        if (favs.isNotEmpty()) { items += getString(R.string.favourites); items.addAll(favs); items += getString(R.string.all_contacts) }
-        items.addAll(all)
-        val add = iconButton(R.drawable.ic_person_add, getString(R.string.new_contact), R.color.accent) { editContact(null) }
-        listScreen(getString(R.string.search), add, Rows(items) { it ->
-            if (it is String) label(it.uppercase(), R.color.accent, 12f, bold = true).apply { setPadding(dp(4), dp(12), 0, dp(4)) }
-            else (it as Contact).let { c -> rowView(avatar(c.name, c.photo), (if (c.starred) "★ " else "") + c.name, c.phones.firstOrNull()?.let { p -> app.format(p.n) }, null) }
-        }) { pos -> (items[pos] as? Contact)?.let { contactMenu(it) } }
+        if (listTab != TAB_CONTACTS) {
+            list = null
+            content.removeAllViews()
+            contactsView = ContactsView(this, linkViews, ::showLinkOverflow, ::showContactDetails,
+                { contact -> choosePhone(contact) { app.dial(it.n, app.state.defaultSub) } }) { editContact(null) }
+            content.addView(contactsView, FrameLayout.LayoutParams(-1, -1))
+            listTab = TAB_CONTACTS
+        }
+        contactsView.submit(app.state.contacts)
+        val details = contactDetails ?: return
+        val contact = app.state.contacts.firstOrNull { it.id == detailedContactId }
+        if (contact == null) closeContactDetails()
+        else details.bind(contact, contact.phones.firstOrNull()?.let { app.state.isBlocked(it.n) } == true, null)
+    }
+
+    private fun choosePhone(contact: Contact, confirmAction: Int = R.string.call, action: (Phone) -> Unit) {
+        val phones = contact.phones
+        when (phones.size) {
+            0 -> return
+            1 -> action(phones.single())
+            else -> showContactNumberPicker(this, linkViews, contact, confirmAction, action)
+        }
+    }
+
+    private fun showContactDetails(contact: Contact) {
+        val details = ContactDetailsView(this, linkViews,
+            back = ::closeContactDetails,
+            call = { c -> choosePhone(c) { app.dial(it.n, app.state.defaultSub) } },
+            message = { c -> choosePhone(c, R.string.contacts_detail_message) { openThread(it.n) } },
+            edit = { editContact(it) },
+            block = { c -> c.phones.firstOrNull()?.let { app.state.setBlocked(it.n, !app.state.isBlocked(it.n)) } },
+            favourite = { app.state.setStarred(it.id, !it.starred) },
+            more = ::contactMenu,
+            phoneActions = { _, phone ->
+                val number = app.format(phone.n)
+                AlertDialog.Builder(this).setTitle(number)
+                    .setItems(arrayOf(getString(R.string.call_number, number), getString(R.string.message_number, number))) { _, position ->
+                        if (position == 0) app.dial(phone.n, app.state.defaultSub) else openThread(phone.n)
+                    }.show()
+            })
+        detailedContactId = contact.id
+        contactDetails = details
+        contactsView.visibility = View.GONE
+        tabBar.visibility = View.GONE
+        content.addView(details, FrameLayout.LayoutParams(-1, -1))
+        watchBack(true)
+        contacts()
+    }
+
+    private fun closeContactDetails() {
+        val details = contactDetails ?: return
+        content.removeView(details)
+        contactDetails = null
+        detailedContactId = null
+        contactsView.visibility = View.VISIBLE
+        tabBar.visibility = View.VISIBLE
+        watchBack(false)
     }
 
     private fun contactMenu(c: Contact) {
@@ -824,6 +879,7 @@ class MainActivity : Activity() {
     }
 
     private fun openLinkSection(section: LinkSection) {
+        if (tab != TAB_LINK) select(TAB_LINK)
         linkSection = section
         revealLinkSection = true
         linkTab()
