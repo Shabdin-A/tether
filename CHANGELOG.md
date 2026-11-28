@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.6 — 2026-11-28
+
 ### Call audio and the link (#13, #14, #25, #26, #29)
 
 - Android phone, call audio: when the interception API's uplink does not open in a call (or opens routed somewhere
