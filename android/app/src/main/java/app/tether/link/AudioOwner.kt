@@ -28,6 +28,14 @@ object AudioOwner {
     fun <C> elsewhere(state: String, owner: C?, client: C, blocked: Boolean): Boolean =
         state != "ringing" && state != "ended" && (blocked || owner == null || owner !== client)
 
+    /**
+     * Whether the Android phone shows its own call screen (and full-screen call pop-up): always, unless the owner turned
+     * that off and the call's audio is with a client. A call answered or dialed on the phone itself ([owner] null), or
+     * kept on the phone because it gives no call audio ([blocked]), always shows its screen.
+     */
+    fun <C> showsPhoneScreen(showWhenBridged: Boolean, owner: C?, blocked: Boolean): Boolean =
+        showWhenBridged || owner == null || blocked
+
     /** The name a client shows for "on …": the owning client's, else the Android phone's own. */
     fun where(ownerName: String?, phoneName: String): String = ownerName ?: phoneName
 

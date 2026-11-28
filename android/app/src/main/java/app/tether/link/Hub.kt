@@ -50,6 +50,7 @@ class Hub(private val app: TetherApp) : ConnectionListener {
         const val PREF_MIC_MUTE = "phone_mic_mute"
         /** "This phone's microphone during bridged calls": MicPath.Setting auto (default) | mute | open (issue #2). */
         const val PREF_MIC = "phone_mic"
+        const val PREF_CALL_SCREEN = "call_screen_bridged"
         /** Debug flag (adb): validate send/dial/add without touching the radio or the provider. */
         @Volatile var dryRun = false
     }
@@ -76,6 +77,10 @@ class Hub(private val app: TetherApp) : ConnectionListener {
     private val smsRequestIds = java.util.concurrent.atomic.AtomicInteger(System.nanoTime().toInt() ushr 1)
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
     val audio = AudioSession()
+
+    /** Whether the phone shows its own call screen for the call now (the "show it while bridged" setting, AudioOwner). */
+    fun showsCallScreen(): Boolean =
+        AudioOwner.showsPhoneScreen(app.prefs.getBoolean(PREF_CALL_SCREEN, true), audio.owner, helper.audioBlocked())
     private val radioPushPending = java.util.concurrent.atomic.AtomicBoolean(false)
     private val endedSent = ConcurrentHashMap<String, Long>()
     private val unreadPushPending = java.util.concurrent.atomic.AtomicBoolean(false)

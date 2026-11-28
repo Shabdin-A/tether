@@ -18,6 +18,12 @@ what you do on the Android phone shows up on the iPhone, and the other way round
 - **Call waiting**: a second call rings as usual; answering it holds the first.
 - **Move the call here**: a call answered on the Android phone itself shows on the iPhone with *Move here*, which
   moves its audio to the iPhone.
+- **Answer buzz**: when the other side picks up a call you placed from the iPhone (or the Android client), the
+  device vibrates briefly, as the system Phone app does. It follows the device's haptics / ringer settings.
+- **The Android phone's own call screen**: while a call is on the iPhone or another client, the Android phone also
+  pops up its call screen. In the app's **Call audio** card, turn off **Show this phone's call screen while a call is
+  on the iPhone** to hide it. Calls you answer or dial on the Android phone itself still show their screen, and the
+  call notification (with its End button) stays, because Android requires it.
 - **Audio** is Opus at 16 kHz in both directions. The Link log lists, after each call, frames sent and received,
   gaps concealed and the link's round-trip time.
 

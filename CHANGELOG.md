@@ -4,6 +4,14 @@
 
 - Android phone: a multipart SMS is marked sent only after every part reports success, even if callbacks arrive
   out of order. If a part fails, both clients receive that part's error.
+### Calls
+- iPhone and Android client: a short vibration when the other side answers a call you placed (as the system Phone app
+  does). It comes once per call, only for calls dialed on that device, and follows the device's own haptics / ringer
+  settings (#13).
+- Android phone: in the **Call audio** card, **Show this phone's call screen while a call is on the iPhone** can be
+  turned off to hide the call pop-up while the iPhone or another client has the call. It is on by default; calls you
+  answer or dial on the phone itself, and phones whose calls are not bridged, still show their screen, and the call
+  notification stays (#13).
 
 ## 1.2.5 — 2026-11-25
 

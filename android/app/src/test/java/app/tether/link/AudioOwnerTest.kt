@@ -48,6 +48,13 @@ class AudioOwnerTest {
         assertFalse(AudioOwner.elsewhere("ringing", iphone, iphone, blocked = true))
     }
 
+    @Test fun theCallScreenCanBeHiddenOnlyForBridgedCalls() {
+        assertTrue("default: shown", AudioOwner.showsPhoneScreen(true, owner = iphone, blocked = false))
+        assertFalse(AudioOwner.showsPhoneScreen(false, owner = iphone, blocked = false))
+        assertTrue("answered on the phone itself", AudioOwner.showsPhoneScreen(false, owner = null as Client?, blocked = false))
+        assertTrue("the phone gives no call audio", AudioOwner.showsPhoneScreen(false, owner = iphone, blocked = true))
+    }
+
     @Test fun blockedIsRememberedPerFirmware() {
         assertTrue(AudioOwner.blocked("samsung/a73xq/a73xq:16/X/1:user/release-keys", "samsung/a73xq/a73xq:16/X/1:user/release-keys"))
         assertFalse("a system update clears it", AudioOwner.blocked("samsung/a73xq/a73xq:16/X/1:user/release-keys", "samsung/a73xq/a73xq:16/Y/2:user/release-keys"))

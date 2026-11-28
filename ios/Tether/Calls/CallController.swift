@@ -52,6 +52,9 @@ final class CallController: NSObject {
     private var answeredHere = Set<UUID>()
     private var reportedConnecting = Set<UUID>()
     private var reportedConnected = Set<UUID>()
+    /// Outgoing calls dialed on this iPhone, and those that already gave the "answered" vibration.
+    private var placedHere = Set<UUID>()
+    private var answerCueGiven = Set<UUID>()
     /// CallKit has performed the start action for these outgoing calls (reports before that are dropped).
     private var startPerformed = Set<UUID>()
     /// The user hung up an outgoing call before the Android phone reported it: end it as soon as it shows up.
@@ -338,6 +341,7 @@ final class CallController: NSObject {
                 pendingOutgoing = nil
                 dialWatchdog?.cancel()
                 bind(c.cid, uuid)
+                placedHere.insert(uuid)
             } else if let t = cancelledDialAt, Date().timeIntervalSince(t) < 30, cancelledNumber.isEmpty, !c.isIncoming {
                 // The dial the user already hung up on before its number was known: end it on the Android phone instead of
                 // showing it (a call to a known other number, or an incoming one, is never taken for it).
@@ -370,6 +374,11 @@ final class CallController: NSObject {
         case "active":
             model.audio.ringback = false
             reportOutgoingProgress(uuid)
+            if AnswerCue.shouldFire(placedHere: placedHere.contains(uuid), previous: prev, state: c.state,
+                                    alreadyFired: answerCueGiven.contains(uuid)) {
+                answerCueGiven.insert(uuid)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)   // follows the system's haptics setting
+            }
             if c.isIncoming && prev == "ringing" && !answeredHere.contains(uuid) { mirrorAnswer(uuid) }
             if prev == "holding" && holdRequested.remove(uuid) == nil { run(CXSetHeldCallAction(call: uuid, onHold: false), mirrored: true) }
         case "holding":
@@ -422,7 +431,7 @@ final class CallController: NSObject {
             if callKitRebuildPending { rebuildCallKit("after the call") }
         }
         answeredHere.remove(uuid); reportedConnecting.remove(uuid); reportedConnected.remove(uuid); mirrored.remove(uuid)
-        startPerformed.remove(uuid)
+        startPerformed.remove(uuid); placedHere.remove(uuid); answerCueGiven.remove(uuid)
         // Close the call screen at once (another call takes it over if there is one).
         if model.callScreen?.uuid == uuid {
             model.callScreen = nextScreen()

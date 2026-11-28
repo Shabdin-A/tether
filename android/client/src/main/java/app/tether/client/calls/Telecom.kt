@@ -3,10 +3,13 @@ package app.tether.client.calls
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.telecom.CallAudioState
 import android.telecom.Connection
 import android.telecom.ConnectionRequest
@@ -132,6 +135,15 @@ class TelecomBridge(private val app: ClientApp) : CallSink {
     })
 
     override fun ringback(on: Boolean) { app.audio.ringback = on }
+
+    /** The other side answered: one short buzz, like the system Phone app; silent while the ringer is on silent. */
+    override fun answered(local: String) {
+        runCatching {
+            if (app.getSystemService(AudioManager::class.java).ringerMode == AudioManager.RINGER_MODE_SILENT) return
+            val v = app.getSystemService(Vibrator::class.java)
+            if (v.hasVibrator()) v.vibrate(VibrationEffect.createOneShot(90, VibrationEffect.DEFAULT_AMPLITUDE))
+        }
+    }
     override fun uplink(open: Boolean) = app.audio.setUplink(open)
 
     override fun idle() {

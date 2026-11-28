@@ -34,6 +34,7 @@ import app.tether.core.PairingCode
 import app.tether.helper.CallAudio
 import app.tether.helper.LocalMutes
 import app.tether.helper.MicPath
+import app.tether.link.Hub
 import app.tether.link.LinkLog
 import app.tether.link.LinkService
 import app.tether.report.PhoneReport
@@ -251,6 +252,13 @@ class MainActivity : Activity() {
                 }), if (u == "muted-locally-fixed") R.color.warn else R.color.muted, 13f))
             }
         }
+        // The phone's own call screen while a client has the call (issue #13): shown unless the owner turns it off.
+        audio.addView(android.widget.CheckBox(this).apply {
+            text = getString(R.string.call_screen_bridged); textSize = 15f; setTextColor(color(R.color.text))
+            isChecked = app.prefs.getBoolean(Hub.PREF_CALL_SCREEN, true)
+            setOnCheckedChangeListener { _, on -> app.prefs.edit().putBoolean(Hub.PREF_CALL_SCREEN, on).apply() }
+        })
+        audio.addView(label(getString(R.string.call_screen_bridged_note), R.color.muted, 13f))
         app.hub.lastSelftest?.let { st ->
             val methods = st.optJSONArray("methods")
             val txt = (0 until (methods?.length() ?: 0)).joinToString("\n") {
