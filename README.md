@@ -92,9 +92,11 @@ other clients and tools on the same link.
 
 The **Android client** (`android/client`, "Tether Client") does the same on another Android phone (Android 10 or
 later): pairing by QR code, calls through Android's own call system (Bluetooth headsets and the car included) with
-audio both ways, the keypad, Recents, Contacts and Favourites, Messages, notifications, the Link screen and its
-switches, and "Call with" for `tel:` links in other apps. See [docs/ANDROID-CLIENT.md](docs/ANDROID-CLIENT.md); it is
-tested on the build machine only so far (against a simulated Android phone), not yet on a second phone.
+audio both ways (optionally in the phone's own Phone app, through a calling account per SIM), the keypad and USSD
+codes, Recents grouped by day, Contacts and Favourites, Messages with starred texts, notifications (a low-battery alert
+for the SIM phone too), the Link screen and its switches, and "Call with" for `tel:` links in other apps. See
+[docs/ANDROID-CLIENT.md](docs/ANDROID-CLIENT.md); its automatic tests run against a simulated Android phone, and a
+contributor uses it daily on two Samsung phones.
 
 ## How it fits together
 

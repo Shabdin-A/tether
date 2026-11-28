@@ -72,6 +72,10 @@ and call history. The SIM phone stays in a bag; you use the other phone.
 - A call answered on the SIM phone itself whose audio comes to this client while it is in the background may have a
   silent microphone: Android lets a background app start a microphone service only in some cases. Calls answered on
   this phone (its call screen or notification) are not affected.
+- Calls in the Phone app run while Tether Client itself stays in the background (the Phone app's call screen is in
+  front). This works on the Samsung phones (One UI 8) it was written on; other makers' Phone apps, and whether they
+  let a background app's microphone into such a call, are not checked yet. Turning the switch off brings back this
+  app's own call screen. Stars and the recent USSD codes are kept on this phone only.
 - The UI is plain Android views built in code, not Material components. Its buttons come from `ui/Buttons.kt`
   (ripples, a 48dp minimum, TalkBack labels; icons in `res/drawable/ic_*.xml`, tinted from the palette).
 

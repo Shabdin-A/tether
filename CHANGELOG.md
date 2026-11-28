@@ -109,6 +109,47 @@
   - Recents, Contacts and Messages: Clear all, New contact and New message are icon buttons beside the search field.
     The call banner and the error banner show a ripple when tapped.
   - Link: the data SIM is a row of choices with the chosen one filled; the quieter actions use quieter styles.
+- Android client: **calls in the Phone app**. Link › Calls › **Use the Phone app for calls** (on by default) makes the
+  Android phone's SIMs calling accounts of this phone, one per SIM ("Tether · Work"): calls ring in the Phone app with
+  its call screen and ringtone, can be dialed from its keypad, contacts and call history, and are logged there.
+  Android asks you to turn the accounts on once (**Open calling accounts**); until then, or with the switch off, calls
+  use Tether Client's own call screen as before. The call screen can move a call to the Phone app, **Move here** puts a
+  call straight into its call screen (handed over as an outgoing call, so the Phone app's history may list it so), a
+  missed call that rang there is not notified twice, and the link log says where each incoming call went. Dialing
+  through the Phone app from Tether's keypad and opening its call screen need the Phone permission. The protocol and
+  the SIM phone's app do not change (#27, thanks @hffygg).
+- Android client: a call on another device stays in the notification bar ("Call on another device", **Move here**),
+  quiet, until it ends or comes here; Link › Calls says when Android 14+ does not let an incoming call in Tether's own
+  screen wake the screen, with a button to the setting (#27, thanks @hffygg).
+- Android client: **Recents grouped by day** (a card per day, a direction icon, SIM, duration and time per line, calls
+  in a row from one number as one line with a count, a date bubble while scrolling). A long press selects calls (a
+  day's heading selects the day) to delete them together; ⋮ on the bar opens the one-call menu (#27, thanks @hffygg).
+- Android client: **Messages list** with a thin line between conversations, the date and a round unread count on the
+  right, unread conversations in bold and a person icon for numbers that are not contacts. A long press selects
+  conversations to mark read, mute, block, delete or call together; the old long-press menu's actions are all there
+  (#27, thanks @hffygg).
+- Android client: **conversations** with a heading per day (pinned while scrolling), an "Unread messages" line where
+  the conversation opens, the time beside each bubble and each line in its own direction (Persian right to left,
+  English left to right). A long press selects texts to copy, star or delete together; with one selected, **Select
+  text** copies part of it and **Send again** resends one that was not delivered (#27, thanks @hffygg).
+- Android client: **Starred messages**: a star beside the Messages search field opens the chats with starred texts and
+  each chat's starred texts (searchable); a tap opens the text in its conversation. Stars are kept on this phone only
+  (#27, thanks @hffygg).
+- Android client: **USSD codes** (Keypad › USSD codes, or a code such as *123# on a call button or dialed in the Phone
+  app with Tether's account): choose the SIM, see the carrier's answer, answer a menu with a new code that carries the
+  choice (*123# then 2 sends *123*2#), send recent codes again. Uses the existing `ussd.send` / `ussd.result` (#27,
+  thanks @hffygg).
+- Android client: **low-battery alert** for the SIM phone (Link › Low battery alert, off or 10–50 %, 20 % by default):
+  a notification at that level and at every 5 % below it while it is not charging, in its own notification category.
+  Texts are now conversation notifications (a shortcut per conversation) (#27, thanks @hffygg).
+- Android client: new buttons throughout (ripples, 48dp touch targets, text that wraps, TalkBack labels), tabs with
+  icons and a red count badge, round call-screen actions with labels, a round Send button, and icon buttons beside
+  the search fields (#27, thanks @hffygg).
+- Android client: the keypad is centred on wide phones and its digits sit in the middle of their keys (Galaxy S26
+  Ultra); the call screen's keypad too (#29, #27).
+- The iPhone app does not have the Recents, Messages, Starred and low-battery changes above yet; the Phone-app calling
+  accounts are Android only (CallKit already rings in the iPhone's own call screen). USSD is on the iPhone under
+  Link › Phone tools.
 
 ## 1.2.5 — 2026-11-25
 
