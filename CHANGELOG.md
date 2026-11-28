@@ -54,6 +54,36 @@
 - The iPhone app does not have the Recents, Messages, Starred and low-battery changes above yet; the Phone-app calling
   accounts are Android only (CallKit already rings in the iPhone's own call screen). USSD is on the iPhone under
   Link › Phone tools.
+- Android phone, call audio: when the interception API's uplink does not open in a call (or opens routed somewhere
+  other than the call), Tether now tries every other way into the call before giving up: `telephony_tx` (in-call
+  music, also as a low-latency track where the normal one is sent elsewhere or gets no route) and, when neither opens,
+  `policy_mix`, each checked for where Android routes it. A `telephony_tx` track for which the phone reports no route
+  at all is used only when nothing else is routed to the call, as 1.1.0 used it; the capture's wait for the interception API no longer uses up the injection's; the
+  self-test's saved method comes first but no longer alone. On a Redmi Note 10 5G (MediaTek) 1.2.5 opened no injection
+  at all ("method -", 1076 of 1126 uplink frames dropped) where 1.1.0 had worked. A track the phone stops taking
+  during the call is replaced by the next method. The `call audio path:` line, and the call figures the iPhone keeps
+  (`inject …`), say which method was used, what was tried before it and why (#14).
+- Android phone, call audio: the link log says when the phone takes the injected voice clearly slower than real time
+  (`taken at about 14768 Hz instead of 16000 Hz`, as on a Poco X3 Pro whose far end heard nothing): the phone is then
+  probably not sending it into the call. Problem reports now also carry the audio system's own log lines about the
+  call's paths (mixer paths, use cases, voice PCM devices, vendor keys and mutes) and the voice-call volume (#14).
+- Android phone: the call volume is put back to its lowest step whenever it rises during a bridged call (a phone may
+  set it anew once the call has its audio). It matters most on Samsung phones with a Qualcomm chip (Galaxy A73, A52s),
+  where One UI 8 ignores the voice-call mute: the far end hears less of itself through the phone's open microphone.
+  The `call audio path:` line shows the volume, and the link log says when it had risen (#13, #25).
+- Android phone, Qualcomm phones (Xiaomi, Redmi, Poco, OnePlus, Samsung with a Qualcomm chip): **Muted** mutes the
+  phone's microphone through Android again when the call's voice goes in through the in-call music route
+  (`telephony_tx`): Qualcomm's audio system then mutes only the microphone, and the Galaxy A73's self-test heard the
+  iPhone's voice at full level with the mute on. Each call checks it until it held once and turns it off if your
+  voice stops reaching the call. With the other routes the microphone stays on as in 1.2.5. Try it if the other side
+  hears an echo of itself (#13, #25).
+- Link: the Android phone no longer asks the iPhone for a slower Bluetooth connection within 35 s of its previous
+  request, and never sends the same request twice in a row. On a Galaxy A73 every "balanced" request sent 9–15 s
+  after a call's start went unanswered, and the phone dropped the link 40 s later (Bluetooth status 34): in the middle
+  of the next call when it came soon, which looked like "audio stops when the screen locks" (#13).
+- Android phone: a bridged call now waits up to 10 s for its iPhone or Android client when the link drops mid-call
+  (it came back in about 6 s each time on the Galaxy A73) instead of handing the call to the phone's loud earpiece
+  for those seconds; the link log says so (#13).
 
 ## 1.2.5 — 2026-11-25
 

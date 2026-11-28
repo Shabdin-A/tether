@@ -81,12 +81,22 @@ Check the iPhone's microphone permission for the app (Settings › Privacy & Sec
 screen and the Link tab say when it is refused or silent) and that the call is not muted. The Android phone keeps its
 own microphone out of the call automatically and checks that your voice still gets through; if it does not, try
 Call audio › "This phone's microphone during bridged calls" › **On**, and run the self-test during a call. On Qualcomm
-phones (Xiaomi, Redmi, Poco, OnePlus and others) **Muted** keeps the microphone on since 1.2.5: muting it there also
-silenced your voice. If the other side hears you only while the Android phone is close to you, the iPhone's voice is
-not reaching the call and what they hear is the Android phone's own microphone: put it in another room, call
-again, and include the link log in your report. If calls dialed on the iPhone end at once and incoming calls are
+phones (Xiaomi, Redmi, Poco, OnePlus and others) **Muted** mutes the microphone only while your voice goes in through
+the in-call music route (`telephony_tx`); with the other routes muting it also silenced your voice, so it stays on. If
+the other side hears you only while the Android phone is close to you, the iPhone's voice is not reaching the call and
+what they hear is the Android phone's own microphone: put it in another room, call again, and send the problem
+reports of **both** phones (the iPhone's alone does not say why). The Android phone tries every way into the call by
+itself and its link log says which one it used and why. If calls dialed on the iPhone end at once and incoming calls are
 silent both ways, iOS restarted its call service under Tether: with versions up to 1.2.4, swipe Tether away in the
 app switcher and open it again (1.2.5 and later recover by themselves). Full list: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-other-side-cannot-hear-me).
+
+### The other side hears an echo of itself. What can I do?
+
+The Android phone's earpiece still plays the call and its microphone picks it up. Tether keeps the phone's call volume
+at its lowest step during a bridged call. On Samsung phones with a Qualcomm chip (Galaxy A73, A52s) the earpiece cannot
+be muted fully; choose **Muted** under Call audio › "This phone's microphone during bridged calls": with the in-call
+music route these phones use, Android's microphone mute keeps your voice in the call (checked during the call). See
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-other-side-hears-an-echo-of-itself).
 
 ### How far apart can the phones be?
 

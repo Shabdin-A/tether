@@ -12,6 +12,7 @@ send a [problem report](#what-to-include-in-a-report) from each app instead: it 
 | "The Android phone does not recognise this iPhone" | The pairing was removed on the Android phone: pair again (SETUP.md step 2) |
 | "Pairing code expired" | The QR code is valid for 5 minutes and once only, and is lost if Tether restarts: tap Pair iPhone again for a new one |
 | Links, then drops every few seconds | Check the link logs for the reason. Battery savers: give Tether unrestricted battery use on Android |
+| Drops about 40 s after a call, or in the middle of the next call ("audio stops when the screen locks") | Update the Android app. Older versions asked for a slower Bluetooth connection right after a call; some iPhone and Android pairs never answered that request, and Android dropped the link 40 s later (`status=34` in the Android app log). A call now also waits up to 10 s for the iPhone to come back instead of jumping to the phone's earpiece |
 | Nothing after an update of the Android app | Open Tether on the Android phone once (some phones do not restart its service after an update) |
 
 ### Bluetooth tethering
@@ -91,6 +92,16 @@ iPhone. The iPhone's voice is injected into the call's uplink by the Android pho
 - **The injection did not open, or does not go into the call.** Some phones refuse it, or refuse it until the call is
   connected (Tether waits for that), or play it on the phone's own speaker (the `call audio path:` line then says
   `NOT the call's uplink`, and a later line `is not being taken by the phone` when the phone takes nothing from it).
+  Once the call has its audio, Tether tries every way in: the interception API (`intercept`), the in-call music route
+  (`telephony_tx`, also as a low-latency track) and, when neither opens, an audio-policy route (`policy_mix`), each
+  checked for where Android sends it; a route the phone does not report is used only when no other one reaches the
+  call. The
+  `call audio path:` line lists what was tried and why the one in use was kept; the iPhone's copy of the call figures
+  ends with `inject <method> (…)` or `inject NONE (…)`. A track the phone stops taking during the call is replaced by
+  the next method (`injection switched during the call`).
+- **The phone takes the injected voice but does not send it.** `is taken at about 14768 Hz instead of 16000 Hz` in the
+  link log: the phone plays the iPhone's voice somewhere off the call's clock (seen on a Poco X3 Pro, issue #14).
+  Nothing in Tether can prove where it goes from there: please send the Android phone's problem report (below).
 - **A way of keeping the phone's own microphone out of the call that the phone mishandles.** By default (**This phone's
   microphone during bridged calls: Off during calls**, Android app › Call audio, or the picker in the iPhone's Link
   tab) Tether tries, one after the other, what this phone model has not shown to fail: Android's redirect audio modes
@@ -114,9 +125,10 @@ iPhone. The iPhone's voice is injected into the call's uplink by the Android pho
 - **The Android phone's microphone mute** (only with **Muted**). On several phones (MediaTek for certain, Qualcomm
   audio systems) muting the phone's microphone also mutes the injected voice. Where the phone maker has its own
   microphone switch Tether uses that; on Qualcomm phones without one (Xiaomi, Redmi, Poco, OnePlus, Samsung with a
-  Qualcomm chip and others) Android's microphone mute is never used, since the uplink check could not see that it
-  silences your voice: the microphone stays on and the Android app says so under **Muted**. Elsewhere Tether checks
-  during each call, turns the mute off when your voice does not get through and remembers it.
+  Qualcomm chip and others) Android's microphone mute is used only while your voice goes in through the in-call music
+  route (`telephony_tx`): there the audio system mutes just the microphone. With the other routes it would silence
+  your voice too, so the microphone stays on and the Android app says so under **Muted**. Tether checks during each
+  call, turns the mute off when your voice does not get through and remembers it.
 - **The iPhone app lost its CallKit registration** (before 1.2.5): calls dialed on the iPhone
   end at once and incoming calls ring but stay silent both ways until Tether is force-quit. iOS had restarted its
   call service under the running app. Versions from 1.2.5 on set CallKit up again by themselves (`CallKit: … provider
@@ -130,6 +142,16 @@ iPhone. The iPhone's voice is injected into the call's uplink by the Android pho
 With **On** the Android phone's own microphone stays in the call: the other side may hear your voice twice (the
 phone in the room hears you too), the bag's noise, and their own voice from the iPhone's speaker. **Off during
 calls** avoids that where the phone allows it.
+
+### The other side hears an echo of itself
+
+The Android phone's own earpiece still plays the call and its microphone, still in the call, picks it up. Samsung
+phones with a Qualcomm chip (Galaxy A73, A52s, One UI 8) ignore the voice-call mute, and Tether no longer uses
+Samsung's call keys there (they once left the phone's calls silent until a restart, 1.2.4). Tether keeps the phone's
+call volume at its lowest step for the whole bridged call (the `call audio path:` line shows `voice-call volume 1 of
+1–8`). If the echo stays, choose **Muted** in the Android app (Call audio › This phone's microphone): with the
+in-call music route (`telephony_tx`, which these phones use) Android's microphone mute keeps your voice in the call,
+and Tether checks that during the call. Keeping the Android phone in a bag or face down also helps.
 
 What to do:
 
@@ -151,9 +173,13 @@ What to do:
    the summary then says `then muted by the vendor key` or `then open`), `uplink check …` lines,
    `remembered for this phone …` when a result was stored, and a `call audio:` summary at the end with the uplink
    figures (`uplink speech N frames`: 0 means the iPhone sent only silence).
-4. Report it (GitHub issue) with: the Android phone's model and Android version, the iPhone model and iOS version,
-   the microphone setting, every self-test row (name, ✓ / ✗ and its note), and the `call audio path:`,
-   `call audio: …` and `uplink check` lines of one failed call. Leave out phone numbers.
+4. Report it (GitHub issue) with the **problem reports of both phones** made right after one failed call (see
+   [What to include in a report](#what-to-include-in-a-report)). The iPhone's report alone does not say why the
+   injection failed. From the Android phone's report these parts matter: **Calls and audio** (`Last start INFO`, with
+   `inject`, `injectWhy`, `routed` and `errors`, and `Last self-test`), **Call audio diagnostics** (the snapshots taken
+   at the end of the call: `call players now` with the helper's track and its device, and `audio HAL and policy log
+   lines about call paths`), and the Link log's `call audio path:`, `call audio: …`, `path:` and `uplink check` lines.
+   Leave out phone numbers.
 
 ## The audio helper does not start
 
@@ -190,7 +216,8 @@ its transport, Bluetooth and tethering state, the SIMs' network and signal, the 
 remembered and the last self-test, the link log and the app's log. On the Android phone it also has **call-audio
 diagnostics** from the helper: the audio mode, the interception API, every active recording with whether Android
 silences it (`isClientSilenced`), the call's audio routes and selected lines of `dumpsys audio` and
-`dumpsys media.audio_policy`. The helper takes the same snapshot by itself when a call's audio path looks dead (only
+`dumpsys media.audio_policy`, the voice-call volume, and the audio system's own log lines about the call's paths (mixer
+paths, use cases, voice PCM devices, vendor keys and mutes). The helper takes the same snapshot by itself when a call's audio path looks dead (only
 zeros, nothing delivered, the uplink not taken) and at the end of every bridged call; the last three are in the report.
 This tells "Android silences the recording" apart from "the phone delivers no call audio at all" (#13).
 

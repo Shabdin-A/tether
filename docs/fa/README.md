@@ -178,7 +178,9 @@ https://github.com/amirwmr/tether/releases/latest/download/altstore.json
 | SideStore نمی‌تواند Refresh کند | VPN مخصوص SideStore را روشن کنید، به اینترنت وصل باشید و دوباره امتحان کنید؛ اگر سرورهای اپل در دسترس نیستند از VPN استفاده کنید |
 | آیفون وصل نمی‌شود | هر دو برنامه باز، بلوتوث روشن، گوشی‌ها نزدیک؛ Link log هر دو طرف؛ [TROUBLESHOOTING.md](../TROUBLESHOOTING.md#the-iphone-does-not-link) |
 | صدای تماس روی آیفون نمی‌آید | آیا Audio helper «Running» است؟ اندروید ۱۱ یا بالاتر است؟ self-test را اجرا کنید؛ [No call audio](../TROUBLESHOOTING.md#no-call-audio) |
-| **طرف مقابل صدای من را نمی‌شنود** | روی آیفون: Settings › Privacy & Security › Microphone › Cellular روشن باشد و تماس Mute نباشد. روی اندروید: Call audio › «This phone's microphone during bridged calls» را روی **On** امتحان کنید؛ [جزئیات](../TROUBLESHOOTING.md#the-other-side-cannot-hear-me) |
+| **طرف مقابل صدای من را نمی‌شنود** | روی آیفون: Settings › Privacy & Security › Microphone › Cellular روشن باشد و تماس Mute نباشد. روی اندروید: Call audio › «This phone's microphone during bridged calls» را روی **On** امتحان کنید؛ گزارش مشکل هر دو گوشی را بفرستید؛ [جزئیات](../TROUBLESHOOTING.md#the-other-side-cannot-hear-me) |
+| طرف مقابل پژواک صدای خودش را می‌شنود | روی سامسونگ‌های Qualcomm (A73، A52s) گزینهٔ **Muted** را در Call audio امتحان کنید؛ [جزئیات](../TROUBLESHOOTING.md#the-other-side-hears-an-echo-of-itself) |
+| صدا وسط تماس قطع می‌شود (مثلاً با قفل شدن صفحه) | برنامهٔ اندروید را به‌روز کنید: نسخه‌های قبلی کمی بعد از تماس قبلی درخواستی بلوتوثی می‌فرستادند که بعضی گوشی‌ها جواب نمی‌دادند و ۴۰ ثانیه بعد اتصال قطع می‌شد؛ [جزئیات](../TROUBLESHOOTING.md#the-iphone-does-not-link) |
 | Audio helper بعد از ری‌استارت گوشی کار نمی‌کند | گوشی اندرویدی را یک بار به وای‌فای وصل کنید (Wireless debugging موقع شروع به آن نیاز دارد) |
 
 برای گزارش مشکل، از هر برنامه یک «گزارش مشکل» بفرستید: روی گوشی اندرویدی Tether › «راهنما» › «ارسال گزارش مشکل»، روی
