@@ -5,6 +5,11 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.graphics.Color
+import android.text.TextUtils
+import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.util.Linkify
@@ -43,6 +48,9 @@ class ThreadActivity : Activity() {
     private lateinit var pinned: android.widget.TextView
     private val listener: () -> Unit = { render() }
     private lateinit var header: LinearLayout
+    private lateinit var portrait: FrameLayout
+    private var avatarName: String? = null
+    private var avatarPhoto: String? = null
     /** The bar shown instead of [header] while texts are selected. */
     private lateinit var selBar: LinearLayout
     /** The selected texts (ids), or null when not selecting. */
@@ -59,13 +67,8 @@ class ThreadActivity : Activity() {
         focus = intent.getLongExtra(EXTRA_FOCUS, Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE }
         // A text sent into a new conversation gets its real thread id with the provider row: follow it.
         app.state.onThreadMoved = { from, to -> if (from == thread) thread = to }
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(col(R.color.background)) }
-        header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(12), dp(8), dp(8)) }
-        title = label(app.displayName(address), size = 19f, bold = true).apply { setSingleLine() }
-        header.addView(title.weight())
-        header.addView(iconButton(R.drawable.ic_call, getString(R.string.call), R.color.accent) { app.dial(address, sub) })
-        header.addView(iconButton(R.drawable.ic_more_vert, getString(R.string.more_options)) { menu() })
-        root.addView(header)
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(BACKGROUND) }
+        addHeader(root)
         selBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(4), dp(8), dp(4), dp(4)); visibility = View.GONE
@@ -91,6 +94,9 @@ class ThreadActivity : Activity() {
         bar.addView(simButton)
         input = EditText(this).apply {
             hint = getString(R.string.text_message); setTextColor(col(R.color.text)); setHintTextColor(col(R.color.muted)); maxLines = 5
+            background = surface(COMPOSER, 24)
+            setPaddingRelative(dp(14), dp(8), dp(14), dp(8))
+            minimumHeight = dp(48)
             setText(app.state.draft(address))
             addTextChangedListener(object : android.text.TextWatcher {
                 override fun beforeTextChanged(t: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -99,14 +105,69 @@ class ThreadActivity : Activity() {
             })
         }
         bar.addView(input.weight())
-        sendButton = fab(R.drawable.ic_send, getString(R.string.send)) { send() }.apply {
+        sendButton = fab(R.drawable.ic_thread_send, getString(R.string.send)) { send() }.apply {
             (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8)
+            backgroundTintList = android.content.res.ColorStateList.valueOf(ACCENT)
             isEnabled = input.text.isNotBlank()
         }
         bar.addView(sendButton)
+        root.addView(separator())
         root.addView(bar)
         setContentView(root)
         fitSystemBars(root)
+    }
+
+    private fun addHeader(column: LinearLayout) {
+        val brand = row().apply { setPaddingRelative(dp(16), dp(8), dp(12), 0) }
+        brand.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_link_chain)
+            setColorFilter(ACCENT)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) })
+        brand.addView(label(getString(R.string.link_brand), size = 21f, bold = true))
+        header = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        header.addView(brand)
+        val contactRow = row().apply { setPaddingRelative(dp(4), dp(7), dp(4), dp(7)) }
+        contactRow.addView(action(R.drawable.ic_thread_back, R.string.thread_back) { finish() })
+        portrait = FrameLayout(this)
+        contactRow.addView(portrait, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(10) })
+        val identity = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        title = label("", size = 17f, bold = true).apply { setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
+        identity.addView(title)
+        identity.addView(label(app.format(address), size = 13f).apply {
+            setSingleLine()
+            ellipsize = TextUtils.TruncateAt.END
+            textDirection = View.TEXT_DIRECTION_LTR
+        })
+        contactRow.addView(identity.weight())
+        contactRow.addView(action(R.drawable.ic_thread_call, R.string.call) { app.dial(address, sub) })
+        contactRow.addView(action(R.drawable.ic_link_overflow, R.string.thread_options, onClick = ::menu))
+        header.addView(contactRow)
+        header.addView(separator())
+        column.addView(header)
+    }
+
+    private fun action(icon: Int, description: Int, onClick: () -> Unit) = ImageButton(this).apply {
+        layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+        setImageResource(icon)
+        setColorFilter(Color.WHITE)
+        scaleType = ImageView.ScaleType.CENTER_INSIDE
+        background = android.util.TypedValue().let {
+            theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, it, true)
+            getDrawable(it.resourceId)
+        }
+        contentDescription = getString(description)
+        setOnClickListener { onClick() }
+    }
+
+    private fun separator() = View(this).apply {
+        setBackgroundColor(DIVIDER)
+        layoutParams = LinearLayout.LayoutParams(-1, dp(1))
+    }
+
+    private fun surface(color: Int, radius: Int) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radius).toFloat()
     }
 
     override fun onResume() {
@@ -129,7 +190,15 @@ class ThreadActivity : Activity() {
     private fun render() {
         val s = app.state
         s.openThread = thread
-        title.text = app.displayName(address)
+        val name = app.displayName(address)
+        title.text = name
+        val photo = s.photo(address)
+        if (avatarName != name || avatarPhoto != photo) {
+            portrait.removeAllViews()
+            portrait.addView(avatar(name, photo, 44), FrameLayout.LayoutParams(-1, -1))
+            avatarName = name
+            avatarPhoto = photo
+        }
         val sims = s.sims
         simButton.visibility = if (sims.size > 1) View.VISIBLE else View.GONE
         simButton.text = sims.firstOrNull { it.sub == sub }?.let { it.name.ifEmpty { getString(R.string.sim_n, it.slot + 1) } } ?: getString(R.string.sim)
@@ -251,7 +320,7 @@ class ThreadActivity : Activity() {
         val radii = if (mine) floatArrayOf(r, r, r, r, tail, tail, r, r) else floatArrayOf(r, r, r, r, r, r, tail, tail)
         val body = label(m.body, if (mine) R.color.background else R.color.text, 16f).apply {
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            background = GradientDrawable().apply { cornerRadii = radii; setColor(col(if (mine) R.color.accent else R.color.surface)) }
+            background = GradientDrawable().apply { cornerRadii = radii; setColor(if (mine) ACCENT else CHARCOAL) }
             // Links, e-mail addresses and phone numbers, except "numbers" that are dates, versions or amounts.
             text = android.text.SpannableString(m.body).also { sp ->
                 Linkify.addLinks(sp, Linkify.WEB_URLS or Linkify.PHONE_NUMBERS or Linkify.EMAIL_ADDRESSES)
@@ -267,7 +336,7 @@ class ThreadActivity : Activity() {
             // right, on the left); a line with no letters follows the phone's language.
             textDirection = View.TEXT_DIRECTION_FIRST_STRONG
             textAlignment = View.TEXT_ALIGNMENT_TEXT_START
-            maxWidth = (resources.displayMetrics.widthPixels * 0.72).toInt()
+            maxWidth = ((list.width.takeIf { it > 0 } ?: list.measuredWidth.takeIf { it > 0 } ?: dp(280)) * 0.72).toInt()
         }
         val state = when (m.box) { 4, 6 -> getString(R.string.sending); 5 -> getString(R.string.not_delivered); else -> null }
         val side = if (!item.showTime && state == null && !starred) null else LinearLayout(this).apply {
@@ -412,5 +481,11 @@ class ThreadActivity : Activity() {
         }.show()
     }
 
-    companion object { private const val PIN_TOP = 0; private const val HEADING_TOP = 18; const val EXTRA_ADDRESS = "address"; const val EXTRA_THREAD = "thread"; const val EXTRA_FOCUS = "focus" }
+    companion object {
+        private val BACKGROUND = Color.rgb(11, 13, 15)
+        private val CHARCOAL = Color.rgb(37, 39, 41)
+        private val COMPOSER = Color.rgb(31, 33, 36)
+        private val DIVIDER = Color.rgb(48, 50, 54)
+        private val ACCENT = Color.rgb(0, 199, 183)
+        private const val PIN_TOP = 0; private const val HEADING_TOP = 18; const val EXTRA_ADDRESS = "address"; const val EXTRA_THREAD = "thread"; const val EXTRA_FOCUS = "focus" }
 }

@@ -223,4 +223,6 @@
     <string name="link_diagnostics_subtitle">اتصال و گزارش‌ها</string>
     <string name="link_sim_signal">سیگنال شبکهٔ موبایل %1$d از ۴ %2$s</string>
     <string name="link_plugged">(متصل به برق)</string>
+    <string name="thread_back">بازگشت</string>
+    <string name="thread_options">گزینه‌های گفتگو</string>
 </resources>
