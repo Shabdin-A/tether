@@ -98,8 +98,15 @@ class CallActivity : Activity() {
         if (c == null) { if (seenCall || app.calls.calls.isEmpty()) { updateProximity(null); finish() }; return }
         seenCall = true
         local = c.local
+        val telecom = app.telecom
+        val phoneAppAction = when {
+            telecom.inPhoneApp(c.local) -> PhoneAppAction.OPEN
+            telecom.canMoveToPhoneApp(c.local) -> PhoneAppAction.MOVE
+            telecom.usePhoneApp -> PhoneAppAction.ACCOUNTS
+            else -> PhoneAppAction.NONE
+        }
         val view = Presentation(c, app.calls.calls.filter { it.local != c.local }, app.state.simName(c.sub),
-            app.micWarning?.let { micText(it) }, app.telecom.audioState, app.audio.muted, showKeys, app.calls.cidOf(c.local) != null)
+            app.micWarning?.let { micText(it) }, app.telecom.audioState, app.audio.muted, showKeys, app.calls.cidOf(c.local) != null, phoneAppAction)
         if (view != presentation) {
             val animateKeys = showKeys && presentation?.keypad == false
             presentation = view
@@ -120,9 +127,11 @@ class CallActivity : Activity() {
         updateProximity(if (c.state == "ringing" && c.incoming) null else view.audio?.route ?: CallAudioState.ROUTE_EARPIECE)
     }
 
+    private enum class PhoneAppAction { OPEN, MOVE, ACCOUNTS, NONE }
+
     private data class Presentation(
         val call: LocalCall, val others: List<LocalCall>, val sim: String?, val warning: Int?,
-        val audio: CallAudioState?, val muted: Boolean, val keypad: Boolean, val canHold: Boolean,
+        val audio: CallAudioState?, val muted: Boolean, val keypad: Boolean, val canHold: Boolean, val phoneAppAction: PhoneAppAction,
     )
 
     private var presentation: Presentation? = null
@@ -156,7 +165,7 @@ class CallActivity : Activity() {
                 setOnClickListener { local = other.local; render() }
             }, LinearLayout.LayoutParams(-1, -2))
         }
-        phoneAppRow(c.local)
+        phoneAppRow(c.local, view.phoneAppAction)
         if (c.state == "ringing" && c.incoming) {
             root.addView(controlRow(
                 control(R.drawable.ic_call_end, R.string.decline, prominent = R.color.bad) {
@@ -267,20 +276,21 @@ class CallActivity : Activity() {
      * app" for a call in this screen when a Tether calling account is on; else, with the setting on, why the call is
      * here and where to turn an account on.
      */
-    private fun phoneAppRow(local: String) {
+    private fun phoneAppRow(local: String, action: PhoneAppAction) {
         val t = app.telecom
-        when {
-            t.inPhoneApp(local) -> root.addView(button(getString(R.string.open_phone_app_screen), Look.TONAL, iconId = R.drawable.ic_call) {
+        when (action) {
+            PhoneAppAction.OPEN -> root.addView(button(getString(R.string.open_phone_app_screen), Look.TONAL, iconId = R.drawable.ic_call) {
                 if (t.showPhoneAppCallScreen()) finish()
             })
-            t.canMoveToPhoneApp(local) -> root.addView(button(getString(R.string.move_to_phone_app), Look.TONAL, iconId = R.drawable.ic_call) {
+            PhoneAppAction.MOVE -> root.addView(button(getString(R.string.move_to_phone_app), Look.TONAL, iconId = R.drawable.ic_call) {
                 // The Phone app rings a ringing call itself; a running one shows in its call screen once moved.
                 if (t.moveToPhoneApp(local)) main.postDelayed({ t.showPhoneAppCallScreen(); finish() }, 800)
             })
-            t.usePhoneApp -> {
+            PhoneAppAction.ACCOUNTS -> {
                 root.addView(label(getString(R.string.call_not_in_phone_app), R.color.muted, 13f).apply { gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER })
                 root.addView(button(getString(R.string.phone_app_open_accounts), Look.TEXT) { t.openCallingAccounts(this) })
             }
+            PhoneAppAction.NONE -> Unit
         }
     }
 
