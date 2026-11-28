@@ -18,7 +18,7 @@ end to end encrypted.
 
 | | |
 | --- | --- |
-| The phone with the SIMs | Any Android phone with Android 8.0 or later and Bluetooth LE. **Call audio** (hearing and talking on the iPhone) needs Android 11 or later and works best on Android 13+; on Android 10 you control calls from the iPhone but talk on the Android phone. Android 8 and 9 are coming in 1.2.0 for texts, contacts and call control (no call audio). Details: [features by Android version](devices/android-versions.md) |
+| The phone with the SIMs | Any Android phone with Android 8.0 or later and Bluetooth LE. **Call audio** (hearing and talking on the iPhone) needs Android 11 or later and works best on Android 13+; on Android 10 you control calls from the iPhone but talk on the Android phone. Android 8 and 9 work for texts, contacts and call control (no call audio). Details: [features by Android version](devices/android-versions.md) |
 | The phone in your hand | An iPhone or iPad with iOS 16 or later, **or** a second Android phone (Android 10+) with the Tether Client app |
 | A Wi-Fi network | Once, for the Android phone's Wireless debugging pairing (needed for call audio and the network switches) |
 | A computer | **Not needed for Android.** For the iPhone: once, a Mac **or** a Windows PC to set up the sideloading tool (see section 4). No Mac is required |

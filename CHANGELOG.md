@@ -12,7 +12,7 @@
   turned off to hide the call pop-up while the iPhone or another client has the call. It is on by default; calls you
   answer or dial on the phone itself, and phones whose calls are not bridged, still show their screen, and the call
   notification stays (#13).
-- Docs: add an interactive Persian installation guide with device-specific steps, checklists, and troubleshooting.
+- Docs: an interactive Persian installation guide (`docs/fa/install.html`: pick your phones, step checklists with saved progress, an error finder), thanks @sajjadmrx (#28). It is one self-contained dark page that loads nothing from other sites.
 
 ## 1.2.5 — 2026-11-25
 
