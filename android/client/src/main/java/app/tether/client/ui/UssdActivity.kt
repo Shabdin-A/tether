@@ -67,7 +67,7 @@ class UssdActivity : Activity() {
                 override fun afterTextChanged(e: android.text.Editable?) { updateSends() }
             })
         }
-        replySends = label("", R.color.muted, 13f).apply { textDirection = View.TEXT_DIRECTION_LTR }
+        replySends = label("", R.color.muted, 13f).apply { textDirection = View.TEXT_DIRECTION_FIRST_STRONG_LTR }
         recentBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(recentBox, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
         val scroll = ScrollView(this).apply { setBackgroundColor(col(R.color.background)); addView(root) }

@@ -273,7 +273,8 @@ class ThreadActivity : Activity() {
         val side = if (!item.showTime && state == null && !starred) null else LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = if (mine) Gravity.END else Gravity.START
             setPaddingRelative(dp(if (mine) 0 else 8), 0, dp(if (mine) 8 else 0), dp(2))   // relative: the gap faces the bubble in Persian too
-            if (showSim) app.state.simName(m.sub)?.let { addView(label(it, R.color.muted, 10f).apply { setPadding(0, 0, 0, 0); maxLines = 1 }) }
+            // Its own width too: matching the column, a SIM name wider than a short (Persian) time was cut to "S".
+            if (showSim) app.state.simName(m.sub)?.let { addView(label(it, R.color.muted, 10f).apply { setPadding(0, 0, 0, 0); maxLines = 1 }, LinearLayout.LayoutParams(-2, -2)) }
             if (starred) addView(android.widget.ImageView(context).apply { setImageDrawable(icon(R.drawable.ic_star, R.color.warn, 14))
                 contentDescription = getString(R.string.starred) }, LinearLayout.LayoutParams(dp(14), dp(14)).apply { bottomMargin = dp(2) })
             // Each line its own width (the column is as wide as its widest; a star alone made the time cut off).
