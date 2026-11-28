@@ -13,6 +13,8 @@
     <string name="battery">Battery %1$d %%%2$s</string>
     <string name="audio_unavailable">Call audio is not available on this Android phone: it needs Android 11 or later. Calls are still answered, placed and ended here, but you hear and speak on the Android phone.</string>
     <string name="audio_blocked">This Android phone\'s software gives Tether no call audio (the call sounds like silence to it). Calls are still answered, placed and ended here, but you hear and speak on the Android phone. A system update, or a self-test during a call that hears the call, turns call audio back on. If calls on the phone itself have no sound either, restart the phone once.</string>
+    <string name="helper_why_wifi">No call audio right now: the Android phone is not on Wi-Fi, so it cannot start its audio helper (Wireless debugging needs Wi-Fi). Connect it to Wi-Fi, or set up TCP debugging on it (Setup).</string>
+    <string name="helper_needs_wifi">Call audio stops if the Android phone leaves Wi-Fi. To keep it, turn on USB debugging there: Tether › Call audio › Turn on USB debugging.</string>
     <string name="block">Block</string>
     <string name="bt_tethering">Bluetooth tethering</string>
     <string name="call">Call</string>

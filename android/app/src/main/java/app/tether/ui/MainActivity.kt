@@ -202,6 +202,16 @@ class MainActivity : Activity() {
                 (h.optString("capture").takeIf { it.isNotEmpty() }?.let { " · " + getString(R.string.helper_capture, it) } ?: "") else getString(R.string.helper_stopped)) {
             Thread { app.hub.helper.ensureRunning(); app.hub.refresh() }.start()
         })
+        // Without Wi-Fi Android turns Wireless debugging off, and adbd stops with the helper in it (issues #26, #29).
+        if (h.optString("why") == "wifi") audio.addView(label(getString(R.string.helper_why_wifi), R.color.warn, 13f))
+        if (h.optBoolean("needsWifi")) {
+            audio.addView(label(getString(R.string.helper_needs_wifi), R.color.warn, 13f))
+            audio.addView(button(getString(R.string.action_usb_debugging), secondary = true) {
+                if (!Adb.enableUsbDebugging(this)) runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
+                Thread { app.hub.pushStatus() }.start()
+                render()
+            })
+        }
         // The phone's own microphone during bridged calls (issue #2): by default a redirect audio mode takes it out of the
         // call where the phone allows it (MicPath); muting it is opt-in, since on some phones that also mutes the iPhone.
         if (app.hub.helper.audioLevel() != "unavailable") {

@@ -839,6 +839,11 @@ class MainActivity : Activity() {
             "unavailable" -> phone.addView(label(getString(R.string.audio_unavailable), R.color.warn, 13f))
             "blocked" -> phone.addView(label(getString(R.string.audio_blocked), R.color.warn, 13f))
         }
+        // The Android phone's helper needs Wi-Fi to start, and without USB debugging stops with it (issues #26, #29).
+        st?.optJSONObject("helper")?.let { h ->
+            if (h.optString("why") == "wifi") phone.addView(label(getString(R.string.helper_why_wifi), R.color.warn, 13f))
+            else if (h.optBoolean("needsWifi")) phone.addView(label(getString(R.string.helper_needs_wifi), R.color.muted, 13f))
+        }
         for (sim in s.sims) {
             val bars = "▂▄▆█".take(sim.signal.coerceIn(0, 4)).padEnd(4, '·')
             val line = listOfNotNull(sim.name.ifEmpty { getString(R.string.sim_n, sim.slot + 1) }, sim.carrier.takeIf { it.isNotEmpty() && it != sim.name },

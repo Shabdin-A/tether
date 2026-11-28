@@ -184,12 +184,28 @@ What to do:
 ## The audio helper does not start
 
 - Wireless debugging needs a Wi-Fi connection when the helper starts. Connect the Android phone to Wi-Fi, then tap
-  **Start**.
+  **Start**. Without Wi-Fi the Call audio card (and the iPhone's Link tab) says the helper cannot start because the
+  phone is not on Wi-Fi; on a phone that has no Wi-Fi at all, use TCP debugging (SETUP.md).
 - With TCP debugging (SETUP.md): the TCP mode is lost on every phone restart; connect USB and run `adb tcpip 5555`
   again, accept the key prompt, then tap **Start**. If you used another port, Tether only tries the one it was
   enabled with (default 5555).
 - If the phone forgot the Wireless debugging pairing (some updates do), pair again (SETUP.md, Wireless debugging).
 - From a computer, `tools/start-helper.sh` starts the helper over USB `adb` as a fallback.
+
+## Call audio stops when the Android phone leaves Wi-Fi
+
+The Audio helper turns to "Stopped" when Wi-Fi goes off, and calls have no audio until Wi-Fi is back (#26, #29):
+Android turns Wireless debugging off without Wi-Fi and, with USB debugging also off, stops adb and the helper with it.
+Turn on **USB debugging** in Developer options (no cable needed), or tap **Turn on USB debugging** in the Call audio
+card: the helper then keeps running without Wi-Fi. It still needs Wi-Fi (or TCP debugging) to start, for example
+after a restart. Some banking apps refuse to run while USB debugging is on. Details: SETUP.md, "Call audio without
+Wi-Fi".
+
+## Mobile data shows off although it is on
+
+Fixed after 1.2.5 (#14): the switch read Android's global setting, which dual-SIM phones on some ROMs (seen on a Poco
+X3 Pro with a custom ROM) never update; Tether now asks the phone service for the data SIM, then that SIM's own
+setting. On an older version, the switch itself still works: the state is only shown wrong.
 
 ## The iPhone app stopped opening
 

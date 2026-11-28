@@ -192,17 +192,28 @@ public struct HelperInfo: Codable, Equatable, Sendable {
     /// What call audio this Android version allows: "full" (13+), "fallback" (11-12, best effort), "unavailable"
     /// (8 to 10: calls are controlled from the iPhone but their audio stays on the Android phone). Nil from older builds.
     public var audio: String?
+    /// Why the helper is not running: "wifi" = the Android phone is not on Wi-Fi, so it has no Wireless debugging to
+    /// start the helper with (builds after 1.2.5). Nil while it runs, for other reasons and from older builds.
+    public var why: String?
+    /// True while the helper runs only thanks to Wireless debugging: it stops when the Android phone leaves Wi-Fi
+    /// (USB debugging is off there; builds after 1.2.5). Nil from older builds.
+    public var needsWifi: Bool?
     public init(state: String, method: String? = nil, capture: String? = nil, up: Bool = false, down: Bool = false,
                 silent: String? = nil, micMute: Bool? = nil, uplink: String? = nil, mic: String? = nil, micPath: String? = nil,
-                audio: String? = nil) {
+                audio: String? = nil, why: String? = nil, needsWifi: Bool? = nil) {
         self.state = state; self.method = method; self.capture = capture; self.up = up; self.down = down; self.silent = silent
         self.micMute = micMute; self.uplink = uplink; self.mic = mic; self.micPath = micPath; self.audio = audio
+        self.why = why; self.needsWifi = needsWifi
     }
 
     /// The Android phone cannot bridge call audio at all (Android 8 to 10).
     public var audioUnavailable: Bool { audio == "unavailable" }
     /// The Android phone's software gave Tether no call audio in a real call (since 1.2.2): calls stay on that phone.
     public var audioBlocked: Bool { audio == "blocked" }
+    /// The helper cannot start because the Android phone has no Wi-Fi (issues #26, #29).
+    public var stoppedWithoutWifi: Bool { state != "running" && why == "wifi" }
+    /// The running helper would stop if the Android phone left Wi-Fi.
+    public var stopsWithoutWifi: Bool { state == "running" && needsWifi == true }
 }
 
 public struct StatusBody: Codable, Equatable, Sendable {

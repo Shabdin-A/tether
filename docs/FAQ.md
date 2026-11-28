@@ -75,6 +75,19 @@ Bridging call audio and switching mobile data, hotspot, tethering or airplane mo
 shell user has. Tether pairs with the phone's own Wireless debugging once and starts a small helper on the phone;
 nothing leaves the phone. Texts, contacts and call control work without it.
 
+### Does call audio work when the Android phone is not on Wi-Fi?
+
+Yes, once the helper is running, if **USB debugging** is on too (Developer options; no cable needed). Android turns
+Wireless debugging off without Wi-Fi, and with USB debugging off it then stops the helper: call audio and the switches
+stop until Wi-Fi is back. The Call audio card offers **Turn on USB debugging** and the iPhone's Link tab says when this
+applies. Starting the helper (after a restart) still needs Wi-Fi, or TCP debugging on a phone without Wi-Fi
+([SETUP.md](SETUP.md#call-audio-without-wi-fi-keep-usb-debugging-on)).
+
+### Mobile data is on, but the iPhone shows it off
+
+Up to 1.2.5 some dual-SIM phones on custom ROMs (a Poco X3 Pro, #14) switched mobile data correctly but showed the
+wrong state. Later versions read the state from the phone service for the data SIM.
+
 ### The other side cannot hear me. What do I do?
 
 Check the iPhone's microphone permission for the app (Settings › Privacy & Security › Microphone; since 1.2 the call

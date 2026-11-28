@@ -84,6 +84,17 @@
 - Android phone: a bridged call now waits up to 10 s for its iPhone or Android client when the link drops mid-call
   (it came back in about 6 s each time on the Galaxy A73) instead of handing the call to the phone's loud earpiece
   for those seconds; the link log says so (#13).
+- Android phone, call audio without Wi-Fi (#26, #29): Android turns Wireless debugging off when the phone leaves
+  Wi-Fi and, with USB debugging off too, stops adb and the audio helper with it (a process started over adb cannot
+  leave adb's process group), so calls had no audio until Wi-Fi was back. The Call audio card now says when the helper
+  would stop with Wi-Fi and offers **Turn on USB debugging** (with it on, the helper keeps running without Wi-Fi;
+  checked on an Android 13 emulator), and says plainly when the helper cannot start because the phone is not on
+  Wi-Fi, pointing to TCP debugging. The iPhone (Link › Audio helper) and the Android client show the same notes
+  (status `helper.why` / `helper.needsWifi`); without Wi-Fi the app no longer retries the adb launch.
+- Android phone, mobile data switch (#14): the state is read from the phone service for the data SIM, then that SIM's
+  own setting (`mobile_data<sub>`), then the global one. Some dual-SIM phones on custom ROMs (Poco X3 Pro) never
+  update the global setting, so data turned on from the iPhone kept showing off. After a switch the reply waits up to
+  3 s for the new state.
 
 ## 1.2.5 — 2026-11-25
 
