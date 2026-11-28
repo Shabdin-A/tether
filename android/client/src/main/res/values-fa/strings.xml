@@ -223,4 +223,8 @@
     <string name="link_diagnostics_subtitle">اتصال و گزارش‌ها</string>
     <string name="link_sim_signal">سیگنال شبکهٔ موبایل %1$d از ۴ %2$s</string>
     <string name="link_plugged">(متصل به برق)</string>
+    <string name="network_host_connection">اتصال میزبان</string>
+    <string name="network_controls">کنترل‌های شبکه</string>
+    <string name="network_sim_settings">تنظیمات سیم‌کارت</string>
+    <string name="network_value_unknown">%1$s (نامشخص)</string>
 </resources>

@@ -225,4 +225,8 @@
     <string name="link_diagnostics_subtitle">Connection and logs</string>
     <string name="link_sim_signal">Cellular signal %1$d/4 %2$s</string>
     <string name="link_plugged">(plugged in)</string>
+    <string name="network_host_connection">Host connection</string>
+    <string name="network_controls">Network controls</string>
+    <string name="network_sim_settings">SIM settings</string>
+    <string name="network_value_unknown">%1$s (unknown)</string>
 </resources>
