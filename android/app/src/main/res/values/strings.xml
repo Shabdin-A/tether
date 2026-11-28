@@ -98,6 +98,7 @@
     <string name="call_screen_bridged_note">Turn it off to hide the call pop-up when the iPhone or another client has the call. Calls you answer or dial on this phone still show their screen, and the call notification stays.</string>
     <string name="audio_needs_android13">Call audio needs Android 13 or later. On this phone, calls are still answered, placed and ended from the iPhone, but their audio stays on this phone.</string>
     <string name="mic_mute_on">On: Tether checks during each call that your voice still reaches the other side and turns the mute off if it does not.</string>
+    <string name="mic_mute_incall_music">On for calls whose voice goes in through the in-call music path (telephony_tx): there Android\'s microphone mute leaves your voice in the call, and Tether checks that it does. With the other paths this phone\'s microphone stays on (the mute would silence your voice too). Try this if the other side hears an echo of itself.</string>
     <string name="mic_mute_unsupported">On, but not used on this phone: here Android\'s microphone mute also silences your voice for the other side, so the phone\'s microphone stays on during calls.</string>
     <string name="mic_mute_blocked">On, but not used on this phone: muting the microphone silenced your voice for the other side. Switch it off and on to try again.</string>
     <string name="helper_capture">capture %1$s</string>

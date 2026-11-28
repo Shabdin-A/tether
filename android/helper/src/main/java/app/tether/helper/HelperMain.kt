@@ -715,7 +715,7 @@ object HelperMain {
             val errs = JSONArray()
             val next = when (mic) {
                 MicPath.Setting.OPEN -> LocalMutes.Plan.NONE
-                MicPath.Setting.MUTE -> if (legacyNoMute) LocalMutes.Plan.NONE else LocalMutes.manualPlan(CallAudio.silence, muteMemory)
+                MicPath.Setting.MUTE -> if (legacyNoMute) LocalMutes.Plan.NONE else LocalMutes.manualPlan(CallAudio.silence, muteMemory, inject?.name)
                 MicPath.Setting.AUTO -> {
                     val callMode = CallAudio.audioMode()
                     val r = MicPath.choose(android.os.Build.VERSION.SDK_INT, mic, callMode, inject?.name, CallAudio.screeningSupported(), redirectMemory,

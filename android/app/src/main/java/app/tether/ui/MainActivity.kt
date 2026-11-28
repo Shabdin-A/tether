@@ -224,17 +224,20 @@ class MainActivity : Activity() {
             val blocked = mic == MicPath.Setting.MUTE && app.hub.audio.memory() == LocalMutes.Memory.BREAKS_UPLINK
             // No mic mute on this phone keeps the iPhone's voice in the call (Qualcomm: Android's mute is the whole Tx path).
             val unsupported = mic == MicPath.Setting.MUTE && !LocalMutes.canMute(CallAudio.silence)
+            // Qualcomm: Android's mute keeps the iPhone's voice with the in-call music injection only (LocalMutes).
+            val inCallMusic = unsupported && LocalMutes.canMute(CallAudio.silence, "telephony_tx")
             // Without a redirect mode the default setting's next step: the maker's own mic switch, where this phone has one that holds.
             val vendor = autoFailed && LocalMutes.autoPlan(CallAudio.silence, app.hub.audio.memory()).vendorMic
             audio.addView(label(getString(when {
                 vendor -> R.string.mic_auto_vendor
                 autoFailed -> R.string.mic_auto_unavailable
                 mic == MicPath.Setting.AUTO -> R.string.mic_auto_note
+                inCallMusic -> R.string.mic_mute_incall_music
                 unsupported -> R.string.mic_mute_unsupported
                 blocked -> R.string.mic_mute_blocked
                 mic == MicPath.Setting.MUTE -> R.string.mic_mute_on
                 else -> R.string.mic_open_note
-            }), if (blocked || unsupported || (autoFailed && !vendor)) R.color.warn else R.color.muted, 13f))
+            }), if (blocked || (unsupported && !inCallMusic) || (autoFailed && !vendor)) R.color.warn else R.color.muted, 13f))
             h.optString("micPath").takeIf { it.isNotEmpty() }?.let { p ->
                 audio.addView(label(when (p) {
                     "off" -> getString(R.string.mic_now_off, app.hub.helper.lastMic?.optString("mode") ?: "")

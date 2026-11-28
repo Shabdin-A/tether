@@ -823,7 +823,7 @@ class Hub(private val app: TetherApp) : ConnectionListener {
                     r.optJSONArray("methods")?.let { a -> for (i in 0 until a.length()) rows.put(a.get(i)) }
                     // The tone reached the uplink without any local mute: does it with the phone's mic muted too? (Not where
                     // every mic mute this phone has also mutes the injected voice: VOICE_UPLINK may still show it there.)
-                    if (chosen != null && LocalMutes.canMute(CallAudio.silence)) muteRow(chosen, r.optBoolean("micByTelecom"))?.let { rows.put(it) }
+                    if (chosen != null && LocalMutes.canMute(CallAudio.silence, chosen)) muteRow(chosen, r.optBoolean("micByTelecom"))?.let { rows.put(it) }
                     r.put("methods", rows)
                     // A capture method heard the call: this firmware gives call audio after all.
                     val heard = (0 until rows.length()).any { i -> rows.optJSONObject(i)?.let { it.optString("name").startsWith("capture:") && it.optBoolean("ok") } == true }
@@ -888,6 +888,9 @@ class Hub(private val app: TetherApp) : ConnectionListener {
         /** What the helper was last told: the bridged call is active (the uplink flows only then). */
         @Volatile private var sentActive = false
         private var savedVolume = -1
+        @Volatile private var volumeRaisedSaid = false
+        /** When the client with the call's audio lost its link (elapsed ms; 0: it has one), see AudioOwner.holdForReconnect. */
+        @Volatile private var targetLostAt = 0L
         private var lastNoHelperLog = 0L
         /** The helper's plan for this call says: mute the phone's mic through Telecom (only when the user asked, see LocalMutes). */
         @Volatile private var telecomWanted = false
@@ -1035,14 +1038,14 @@ class Hub(private val app: TetherApp) : ConnectionListener {
             val capture = info?.optString("capture")?.takeIf { it.isNotEmpty() && it != "null" }
             return JSONObject().put("name", "call-audio").put("ok", running && inject != null).put("note",
                 if (!running || info == null) "this call's audio was not bridged" else
-                    "inject=${inject ?: "NONE"} capture=${capture ?: "NONE"}; ${CallAudioReport.micLine(helper.lastUplink, micSetting, memory(), helper.lastMic, LocalMutes.canMute(CallAudio.silence))}; " +
+                    "inject=${inject ?: "NONE"} capture=${capture ?: "NONE"}; ${CallAudioReport.micLine(helper.lastUplink, micSetting, memory(), helper.lastMic, LocalMutes.canMute(CallAudio.silence, inject))}; " +
                         "the tests below run with the phone's mic unmuted and the call in its own mode, except the mic rows")
         }
 
         /** The helper's start INFO for a call: one link-log line saying whether the uplink injection opened. */
         fun onHelperInfo(o: JSONObject) {
             infoAt = SystemClock.elapsedRealtime()
-            if (running) LinkLog.add(CallAudioReport.pathLine(o, micSetting, memory(), LocalMutes.canMute(CallAudio.silence)))
+            if (running) LinkLog.add(CallAudioReport.pathLine(o, micSetting, memory(), LocalMutes.canMute(CallAudio.silence, o.optString("inject"))))
         }
 
         /** A path-watch finding (the downlink delivering nothing, the injection not taken): straight into the link log. */
@@ -1329,14 +1332,24 @@ class Hub(private val app: TetherApp) : ConnectionListener {
             }
         }
 
-        /** While the call is bridged to the iPhone, the Android phone's own earpiece goes to its lowest volume. */
+        /**
+         * While the call is bridged to the iPhone, the Android phone's own earpiece goes to its lowest volume, and back
+         * there whenever it rises during the call (checked every second): Samsung's Qualcomm phones ignore the helper's
+         * voice-call mute (issue #13), and the call's volume can be set anew once the call has its audio mode, so the
+         * level set at the call's start did not always hold. The far end heard itself through the open microphone.
+         */
         private fun quietLocalEarpiece(on: Boolean) {
             try {
                 val s = android.media.AudioManager.STREAM_VOICE_CALL
                 if (on) {
-                    if (savedVolume < 0) savedVolume = am.getStreamVolume(s)
-                    am.setStreamVolume(s, if (android.os.Build.VERSION.SDK_INT >= 28) am.getStreamMinVolume(s) else 0, 0)
+                    val min = if (android.os.Build.VERSION.SDK_INT >= 28) am.getStreamMinVolume(s) else 0
+                    val now = am.getStreamVolume(s)
+                    if (savedVolume < 0) savedVolume = now
+                    else if (now <= min) return
+                    else if (!volumeRaisedSaid) { volumeRaisedSaid = true; LinkLog.add("call audio: the phone's call volume rose to $now during the bridged call: lowered to $min again") }
+                    am.setStreamVolume(s, min, 0)
                 } else if (savedVolume >= 0) {
+                    volumeRaisedSaid = false
                     am.setStreamVolume(s, savedVolume, 0)
                     savedVolume = -1
                 }
