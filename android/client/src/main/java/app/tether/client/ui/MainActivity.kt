@@ -10,6 +10,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -47,6 +48,7 @@ class MainActivity : Activity() {
     private lateinit var content: FrameLayout
     private lateinit var banner: LinearLayout
     private lateinit var status: TextView
+    private lateinit var legacyHeader: LinearLayout
     private lateinit var viewport: ClientTabViewport
     private lateinit var tabBar: LinearLayout
     private var tabAppearance: Triple<Int, Int, Int>? = null
@@ -57,6 +59,8 @@ class MainActivity : Activity() {
     private var list: ListView? = null
     /** The frame around [list], and Recents' floating date bubble in it (null until Recents shows). */
     private var listFrame: FrameLayout? = null
+    private var recentsClear: View? = null
+    private var recentsEmpty: TextView? = null
     private var dayBubble: TextView? = null
     private var listTab = -1
     private val linkViews by lazy { LinkViews(this) }
@@ -67,11 +71,11 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         tab = savedInstanceState?.getInt("tab") ?: if (app.identity.isPaired) TAB_RECENTS else TAB_LINK
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(col(R.color.background)) }
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(6)) }
-        header.addView(label(getString(R.string.app_name), size = 22f, bold = true).weight())
+        legacyHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(6)) }
+        legacyHeader.addView(label(getString(R.string.app_name), size = 22f, bold = true).weight())
         status = label("", R.color.muted, 13f)
-        header.addView(status)
-        root.addView(header)
+        legacyHeader.addView(status)
+        root.addView(legacyHeader)
         banner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), 0) }
         root.addView(banner)
         viewport = ClientTabViewport(this)
@@ -146,6 +150,7 @@ class MainActivity : Activity() {
             else -> getString(R.string.state_connecting)
         }
         status.setTextColor(col(if (app.linkState == BleCentral.State.CONNECTED) R.color.ok else R.color.muted))
+        legacyHeader.visibility = if (tab == TAB_RECENTS) View.GONE else View.VISIBLE
         viewport.bounded = tab != TAB_LINK
         renderTabBar(s.unreadTotal, s.missedCount)
         renderBanner()
@@ -223,20 +228,40 @@ class MainActivity : Activity() {
                 val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL }
                 if (hint != null) top.addView(EditText(this).apply {
                     this.hint = hint; setText(query); setSingleLine(); setTextColor(col(R.color.text)); setHintTextColor(col(R.color.muted))
+                    if (tab == TAB_RECENTS) {
+                        background = linkViews.shape(Color.rgb(31, 32, 33), 24)
+                        minHeight = dp(48)
+                        setPaddingRelative(dp(14), 0, dp(14), 0)
+                        setCompoundDrawablesRelative(icon(R.drawable.ic_messages_search, R.color.text, 18), null, null, null)
+                        compoundDrawablePadding = dp(8)
+                    }
                     addTextChangedListener(object : TextWatcher {
                         override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                         override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                         override fun afterTextChanged(e: Editable?) { query = e?.toString() ?: ""; render() }
                     })
                 }.weight())
-                extra?.let { top.addView(it) }
+                extra?.let { top.addView(it); if (tab == TAB_RECENTS) recentsClear = it }
                 box.addView(top)
             }
             val l = ListView(this).apply { divider = null; isFocusable = false }
             // The list in a frame, so a screen can float something over it (Recents' date bubble).
             val frame = FrameLayout(this).apply { addView(l, FrameLayout.LayoutParams(-1, -1)) }
+            if (tab == TAB_RECENTS) {
+                recentsEmpty = label("", R.color.muted, 15f).apply {
+                    textAlignment = View.TEXT_ALIGNMENT_CENTER
+                    visibility = View.GONE
+                }.also { frame.addView(it, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER)) }
+            }
             box.addView(frame, LinearLayout.LayoutParams(-1, 0, 1f))
-            content.addView(box)
+            if (tab == TAB_RECENTS) {
+                content.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPaddingRelative(dp(16), dp(8), dp(16), dp(4))
+                    linkViews.heading(this, R.string.tab_recents, R.string.recents_subtitle, overflow = ::showLinkOverflow)
+                    addView(box, LinearLayout.LayoutParams(-1, 0, 1f))
+                })
+            } else content.addView(box)
             list = l; listTab = tab; listFrame = frame; dayBubble = null
             l
         }
@@ -276,7 +301,7 @@ class MainActivity : Activity() {
         }
         // Calls deleted meanwhile (here or on the Android phone) are no longer picked.
         if (picked != null) { val have = s.recents.mapTo(HashSet()) { it.id }; picked!!.retainAll(have) }
-        listScreen(getString(R.string.search), clear, Rows(items) { item ->
+        listScreen(getString(R.string.recents_search), clear, Rows(items) { item ->
             when (item) {
                 is RecentsLayout.Item.Day -> label(dayName(item.day).uppercase(), R.color.muted, 13f, bold = true).apply {
                     letterSpacing = 0.06f; setPadding(dp(8), dp(16), dp(8), dp(8))
@@ -292,6 +317,17 @@ class MainActivity : Activity() {
             else (items[pos] as? RecentsLayout.Item.Line)?.newest?.let { app.dial(it.num, it.sub ?: s.defaultSub) }
         }
         list?.selector = android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)   // the lines ripple themselves
+        recentsClear?.visibility = if (s.recents.isEmpty()) View.GONE else View.VISIBLE
+        recentsEmpty?.apply {
+            text = getString(when {
+                query.isNotBlank() -> R.string.recents_no_matches
+                s.problem != null -> R.string.recents_error
+                !app.link.isConnected -> R.string.recents_offline
+                s.syncing -> R.string.recents_loading
+                else -> R.string.recents_empty
+            })
+            visibility = if (items.isEmpty() && picked == null) View.VISIBLE else View.GONE
+        }
         dateBubble(items)
         selectionBar(items)
     }
@@ -824,6 +860,7 @@ class MainActivity : Activity() {
     }
 
     private fun openLinkSection(section: LinkSection) {
+        if (tab != TAB_LINK) select(TAB_LINK)
         linkSection = section
         revealLinkSection = true
         linkTab()

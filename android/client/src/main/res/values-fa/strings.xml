@@ -223,4 +223,11 @@
     <string name="link_diagnostics_subtitle">اتصال و گزارش‌ها</string>
     <string name="link_sim_signal">سیگنال شبکهٔ موبایل %1$d از ۴ %2$s</string>
     <string name="link_plugged">(متصل به برق)</string>
+    <string name="recents_subtitle">سابقهٔ تماس‌های گوشی شما</string>
+    <string name="recents_search">جست‌وجوی تماس‌های اخیر</string>
+    <string name="recents_loading">در حال بارگیری سابقهٔ تماس…</string>
+    <string name="recents_empty">تماس اخیری وجود ندارد</string>
+    <string name="recents_no_matches">تماس منطبقی پیدا نشد</string>
+    <string name="recents_error">بارگیری سابقهٔ تماس ممکن نشد. جزئیات در پیام بالا آمده است.</string>
+    <string name="recents_offline">برای بارگیری سابقهٔ تماس به گوشی اندرویدی وصل شوید.</string>
 </resources>
