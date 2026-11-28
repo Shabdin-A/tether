@@ -225,4 +225,6 @@
     <string name="link_diagnostics_subtitle">Connection and logs</string>
     <string name="link_sim_signal">Cellular signal %1$d/4 %2$s</string>
     <string name="link_plugged">(plugged in)</string>
+    <string name="thread_back">Back</string>
+    <string name="thread_options">Conversation options</string>
 </resources>
