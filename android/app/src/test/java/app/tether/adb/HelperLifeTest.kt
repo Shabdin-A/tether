@@ -15,8 +15,8 @@ class HelperLifeTest {
     @Test fun noReasonWhileRunningOrWhenWifiOrTcpDebuggingCanStartIt() {
         assertNull(HelperLife.why(running = true, sdk = 33, wifi = false, adbWifi = false, legacy = false))
         assertNull(HelperLife.why(running = false, sdk = 33, wifi = true, adbWifi = true, legacy = false))
-        // Wireless debugging still on: the Wi-Fi check may lag, so it is tried.
-        assertNull(HelperLife.why(running = false, sdk = 33, wifi = false, adbWifi = true, legacy = false))
+        // No Wi-Fi, even if the Wireless debugging setting still says on (Samsung keeps it on): it cannot be reached.
+        assertEquals("Samsung keeps the setting on without Wi-Fi (A54)", "wifi", HelperLife.why(running = false, sdk = 33, wifi = false, adbWifi = true, legacy = false))
         // TCP debugging reaches adbd on 127.0.0.1 without Wi-Fi.
         assertNull(HelperLife.why(running = false, sdk = 33, wifi = false, adbWifi = false, legacy = true))
         // Android 8-10 have no Wireless debugging: Wi-Fi is not what is missing there.

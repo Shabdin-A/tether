@@ -17,7 +17,9 @@ object HelperLife {
      * and so Android has turned Wireless debugging off ([adbWifi]; Android 11+, TCP debugging not set up); null otherwise.
      */
     fun why(running: Boolean, sdk: Int, wifi: Boolean, adbWifi: Boolean, legacy: Boolean): String? =
-        if (!running && ConnectOrder.tlsSupported(sdk) && !wifi && !adbWifi && !legacy) "wifi" else null
+        // Not [adbWifi]: Samsung keeps the Wireless debugging setting on while Wi-Fi is off (Galaxy A54, 2026-11-28), and
+        // without Wi-Fi it cannot be reached either way.
+        if (!running && ConnectOrder.tlsSupported(sdk) && !wifi && !legacy) "wifi" else null
 
     /**
      * Status `helper.needsWifi`: the running helper stops when the phone leaves Wi-Fi, because only Wireless debugging
