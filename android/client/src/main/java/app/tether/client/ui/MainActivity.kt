@@ -47,7 +47,9 @@ class MainActivity : Activity() {
     private lateinit var content: FrameLayout
     private lateinit var banner: LinearLayout
     private lateinit var status: TextView
-    private val tabs = ArrayList<TabView>()
+    private lateinit var viewport: ClientTabViewport
+    private lateinit var tabBar: LinearLayout
+    private var tabAppearance: Triple<Int, Int, Int>? = null
     private var tab = TAB_KEYPAD
     private val listener: () -> Unit = { render() }
     private var query = ""
@@ -72,15 +74,15 @@ class MainActivity : Activity() {
         root.addView(header)
         banner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), 0) }
         root.addView(banner)
-        content = FrameLayout(this)
-        root.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; setBackgroundColor(col(R.color.surface)); setPadding(0, dp(6), 0, dp(6)) }
-        TAB_NAMES.forEachIndexed { i, name ->
-            val t = TabView(this, TAB_ICONS[i], getString(name)) { select(i) }
-            tabs += t
-            bar.addView(t, LinearLayout.LayoutParams(0, -2, 1f))
+        viewport = ClientTabViewport(this)
+        content = viewport.canvas
+        root.addView(viewport, LinearLayout.LayoutParams(-1, 0, 1f))
+        tabBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(linkViews.background)
+            setPadding(dp(8), dp(5), dp(8), dp(5))
         }
-        root.addView(bar)
+        root.addView(tabBar)
         setContentView(root)
         fitSystemBars(root)
         handleIntent(intent)
@@ -144,9 +146,8 @@ class MainActivity : Activity() {
             else -> getString(R.string.state_connecting)
         }
         status.setTextColor(col(if (app.linkState == BleCentral.State.CONNECTED) R.color.ok else R.color.muted))
-        tabs.forEachIndexed { i, t ->
-            t.update(selected = i == tab, badge = when (i) { TAB_RECENTS -> s.missedCount; TAB_MESSAGES -> s.unreadTotal; else -> 0 })
-        }
+        viewport.bounded = tab != TAB_LINK
+        renderTabBar(s.unreadTotal, s.missedCount)
         renderBanner()
         when (tab) {
             TAB_RECENTS -> recents()
@@ -154,6 +155,22 @@ class MainActivity : Activity() {
             TAB_KEYPAD -> keypad()
             TAB_MESSAGES -> messages()
             else -> linkTab()
+        }
+    }
+
+    private fun renderTabBar(unread: Int, missed: Int) {
+        val appearance = Triple(tab, unread, missed)
+        if (tabAppearance == appearance) return
+        tabAppearance = appearance
+        tabBar.removeAllViews()
+        for (destination in TAB_NAMES.indices.reversed()) {
+            val badge = when (destination) {
+                TAB_MESSAGES -> unread
+                TAB_RECENTS -> missed
+                else -> 0
+            }
+            tabBar.addView(linkViews.tab(TAB_ICONS[destination], getString(TAB_NAMES[destination]),
+                destination == tab, badge) { select(destination) }, LinearLayout.LayoutParams(0, -2, 1f))
         }
     }
 
@@ -1087,6 +1104,6 @@ class MainActivity : Activity() {
         const val EXTRA_TAB = "tab"; const val EXTRA_NUMBER = "number"
         const val TAB_RECENTS = 0; const val TAB_CONTACTS = 1; const val TAB_KEYPAD = 2; const val TAB_MESSAGES = 3; const val TAB_LINK = 4
         private val TAB_NAMES = listOf(R.string.tab_recents, R.string.tab_contacts, R.string.tab_keypad, R.string.tab_messages, R.string.tab_link)
-        private val TAB_ICONS = listOf(R.drawable.ic_history, R.drawable.ic_person, R.drawable.ic_dialpad, R.drawable.ic_chat, R.drawable.ic_link)
+        private val TAB_ICONS = listOf(R.drawable.ic_link_recents, R.drawable.ic_link_contacts, R.drawable.ic_link_keypad, R.drawable.ic_link_messages, R.drawable.ic_link_chain)
     }
 }
