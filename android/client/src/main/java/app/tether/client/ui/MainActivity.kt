@@ -625,10 +625,7 @@ class MainActivity : Activity() {
         val convs = s.conversations.filter { c -> Search.matches(query, listOfNotNull(s.name(c.address)), listOf(c.address)) ||
             (query.length > 1 && s.messages(c.thread).any { Search.fold(it.body).contains(Search.fold(query)) }) }
         val compose = iconButton(R.drawable.ic_edit, getString(R.string.new_message), R.color.accent) {
-            val f = EditText(this).apply { hint = getString(R.string.phone); inputType = InputType.TYPE_CLASS_PHONE }
-            AlertDialog.Builder(this).setTitle(R.string.new_message).setView(FrameLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(f) })
-                .setPositiveButton(R.string.next) { _, _ -> dialable(f.text.toString()).takeIf { it.isNotEmpty() }?.let { openThread(it) } }
-                .setNegativeButton(android.R.string.cancel, null).show()
+            startActivity(Intent(this, NewMessageActivity::class.java))
         }
         // Beside the search field: the starred texts (gold), then New message (the pen).
         val star = iconButton(R.drawable.ic_star_border, getString(R.string.starred_messages), R.color.warn) {

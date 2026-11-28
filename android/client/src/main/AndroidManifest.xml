@@ -77,6 +77,10 @@
         </activity>
 
         <activity
+            android:name=".ui.NewMessageActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
             android:name=".ui.ThreadActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />

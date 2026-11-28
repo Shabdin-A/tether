@@ -225,4 +225,11 @@
     <string name="link_diagnostics_subtitle">Connection and logs</string>
     <string name="link_sim_signal">Cellular signal %1$d/4 %2$s</string>
     <string name="link_plugged">(plugged in)</string>
+    <string name="thread_back">Back</string>
+    <string name="message_recipient_hint">Enter a name or phone number</string>
+    <string name="message_recipient_loading">Loading contacts…</string>
+    <string name="message_recipient_invalid">Enter a valid phone number</string>
+    <string name="message_recipient_empty">No matching contacts</string>
+    <string name="message_recipient_clear">Clear recipient</string>
+    <string name="contacts_search">Search contacts</string>
 </resources>
