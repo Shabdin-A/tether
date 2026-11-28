@@ -10,6 +10,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -47,6 +48,7 @@ class MainActivity : Activity() {
     private lateinit var content: FrameLayout
     private lateinit var banner: LinearLayout
     private lateinit var status: TextView
+    private lateinit var legacyHeader: LinearLayout
     private lateinit var viewport: ClientTabViewport
     private lateinit var tabBar: LinearLayout
     private var tabAppearance: Triple<Int, Int, Int>? = null
@@ -67,11 +69,11 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         tab = savedInstanceState?.getInt("tab") ?: if (app.identity.isPaired) TAB_RECENTS else TAB_LINK
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(col(R.color.background)) }
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(6)) }
-        header.addView(label(getString(R.string.app_name), size = 22f, bold = true).weight())
+        legacyHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(6)) }
+        legacyHeader.addView(label(getString(R.string.app_name), size = 22f, bold = true).weight())
         status = label("", R.color.muted, 13f)
-        header.addView(status)
-        root.addView(header)
+        legacyHeader.addView(status)
+        root.addView(legacyHeader)
         banner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), 0) }
         root.addView(banner)
         viewport = ClientTabViewport(this)
@@ -146,14 +148,16 @@ class MainActivity : Activity() {
             else -> getString(R.string.state_connecting)
         }
         status.setTextColor(col(if (app.linkState == BleCentral.State.CONNECTED) R.color.ok else R.color.muted))
+        legacyHeader.visibility = if (tab == TAB_MESSAGES) View.GONE else View.VISIBLE
         viewport.bounded = tab != TAB_LINK
-        renderTabBar(s.unreadTotal, s.missedCount)
+        val conversations = if (tab == TAB_MESSAGES) s.conversations else null
+        renderTabBar(conversations?.sumOf { it.unread } ?: s.unreadTotal, s.missedCount)
         renderBanner()
         when (tab) {
             TAB_RECENTS -> recents()
             TAB_CONTACTS -> contacts()
             TAB_KEYPAD -> keypad()
-            TAB_MESSAGES -> messages()
+            TAB_MESSAGES -> messages(checkNotNull(conversations))
             else -> linkTab()
         }
     }
@@ -215,7 +219,7 @@ class MainActivity : Activity() {
     })
 
     /** A search field above a list; the list survives redraws (its scroll position too). */
-    private fun listScreen(hint: String?, extra: View? = null, rows: Rows<*>, onLong: ((Int) -> Unit)? = null, onClick: ((Int) -> Unit)? = null) {
+    private fun listScreen(hint: String?, extra: View? = null, rows: Rows<*>, floating: View? = null, onLong: ((Int) -> Unit)? = null, onClick: ((Int) -> Unit)? = null) {
         val lv = list.takeIf { listTab == tab } ?: run {
             content.removeAllViews()
             val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), 0) }
@@ -223,6 +227,13 @@ class MainActivity : Activity() {
                 val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL }
                 if (hint != null) top.addView(EditText(this).apply {
                     this.hint = hint; setText(query); setSingleLine(); setTextColor(col(R.color.text)); setHintTextColor(col(R.color.muted))
+                    if (tab == TAB_MESSAGES) {
+                        background = linkViews.shape(Color.rgb(31, 32, 33), 24)
+                        setPaddingRelative(dp(14), 0, dp(14), 0)
+                        minHeight = dp(48)
+                        setCompoundDrawablesRelative(icon(R.drawable.ic_messages_search, R.color.text, 18), null, null, null)
+                        compoundDrawablePadding = dp(8)
+                    }
                     addTextChangedListener(object : TextWatcher {
                         override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                         override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -232,11 +243,33 @@ class MainActivity : Activity() {
                 extra?.let { top.addView(it) }
                 box.addView(top)
             }
-            val l = ListView(this).apply { divider = null; isFocusable = false }
+            val l = ListView(this).apply {
+                divider = null
+                isFocusable = false
+                if (tab == TAB_MESSAGES) {
+                    background = linkViews.shape(Color.rgb(19, 20, 21), 22)
+                    clipToOutline = true
+                    clipToPadding = false
+                    setPadding(dp(8), dp(4), dp(8), dp(72))
+                }
+            }
             // The list in a frame, so a screen can float something over it (Recents' date bubble).
             val frame = FrameLayout(this).apply { addView(l, FrameLayout.LayoutParams(-1, -1)) }
+            floating?.let { action ->
+                frame.addView(action, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.BOTTOM or Gravity.END).apply {
+                    marginEnd = dp(8)
+                    bottomMargin = dp(8)
+                })
+            }
             box.addView(frame, LinearLayout.LayoutParams(-1, 0, 1f))
-            content.addView(box)
+            if (tab == TAB_MESSAGES) {
+                content.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPaddingRelative(dp(16), dp(8), dp(16), dp(4))
+                    linkViews.heading(this, R.string.tab_messages, R.string.messages_subtitle, overflow = ::showLinkOverflow)
+                    addView(box, LinearLayout.LayoutParams(-1, 0, 1f))
+                })
+            } else content.addView(box)
             list = l; listTab = tab; listFrame = frame; dayBubble = null
             l
         }
@@ -637,24 +670,27 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ Messages
 
-    private fun messages() {
+    private fun messages(conversations: List<app.tether.client.model.Conversation>) {
         val s = app.state
-        val convs = s.conversations.filter { c -> Search.matches(query, listOfNotNull(s.name(c.address)), listOf(c.address)) ||
-            (query.length > 1 && s.messages(c.thread).any { Search.fold(it.body).contains(Search.fold(query)) }) }
-        val compose = iconButton(R.drawable.ic_edit, getString(R.string.new_message), R.color.accent) {
+        val foldedQuery = Search.fold(query)
+        val convs = if (query.isEmpty()) conversations else conversations.filter { c ->
+            Search.matches(query, listOfNotNull(s.name(c.address)), listOf(c.address)) ||
+                (query.length > 1 && s.messages(c.thread).any { Search.fold(it.body).contains(foldedQuery) })
+        }
+        val compose = fab(R.drawable.ic_messages_compose, getString(R.string.new_message)) {
             val f = EditText(this).apply { hint = getString(R.string.phone); inputType = InputType.TYPE_CLASS_PHONE }
             AlertDialog.Builder(this).setTitle(R.string.new_message).setView(FrameLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(f) })
                 .setPositiveButton(R.string.next) { _, _ -> dialable(f.text.toString()).takeIf { it.isNotEmpty() }?.let { openThread(it) } }
                 .setNegativeButton(android.R.string.cancel, null).show()
         }
-        // Beside the search field: the starred texts (gold), then New message (the pen).
+        compose.backgroundTintList = android.content.res.ColorStateList.valueOf(MESSAGE_ACCENT)
         val star = iconButton(R.drawable.ic_star_border, getString(R.string.starred_messages), R.color.warn) {
             startActivity(Intent(this, StarredActivity::class.java))
         }
-        val tools = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; addView(star); addView(compose) }
+        val tools = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; addView(star) }
         // Conversations deleted meanwhile are no longer picked.
-        pickedChats?.retainAll(s.conversations.mapTo(HashSet()) { it.thread })
-        listScreen(getString(R.string.search), tools, Rows(convs) { c -> conversationRow(c, last = c === convs.lastOrNull()) }, onLong = { pos ->
+        pickedChats?.retainAll(conversations.mapTo(HashSet()) { it.thread })
+        listScreen(getString(R.string.messages_search), tools, Rows(convs) { c -> conversationRow(c, last = c === convs.lastOrNull()) }, floating = compose, onLong = { pos ->
             // A long press starts picking conversations; the actions for them come in a bar above the list.
             if (pickedChats == null) pickedChats = LinkedHashSet()
             toggleChat(convs[pos].thread)
@@ -769,7 +805,7 @@ class MainActivity : Activity() {
         val preview = (if (c.last.box != 1) getString(R.string.you) + ": " else "") + c.last.body.replace('\n', ' ').take(160)
         val line = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(12), dp(4), dp(12)); minimumHeight = dp(76)
+            setPadding(dp(4), dp(8), dp(4), dp(8)); minimumHeight = dp(64)
             if (isPicked) background = GradientDrawable().apply { cornerRadius = dp(14).toFloat()
                 setColor(android.content.res.ColorStateList.valueOf(col(R.color.accent)).withAlpha(0x26).defaultColor) }
             addView(pic)
@@ -790,7 +826,7 @@ class MainActivity : Activity() {
                 if (unread) addView(label(if (c.unread > 99) "99+" else c.unread.toString(), R.color.background, 12f, bold = true).apply {
                     gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER; setPadding(dp(6), 0, dp(6), 0)
                     minWidth = dp(22); minimumWidth = dp(22); minHeight = dp(22); minimumHeight = dp(22)
-                    background = GradientDrawable().apply { cornerRadius = dp(11).toFloat(); setColor(col(R.color.accent)) }
+                    background = GradientDrawable().apply { cornerRadius = dp(11).toFloat(); setColor(MESSAGE_ACCENT) }
                 }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) })
             }, LinearLayout.LayoutParams(-2, -2))
         }
@@ -824,6 +860,7 @@ class MainActivity : Activity() {
     }
 
     private fun openLinkSection(section: LinkSection) {
+        if (tab != TAB_LINK) select(TAB_LINK)
         linkSection = section
         revealLinkSection = true
         linkTab()
@@ -1100,6 +1137,7 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        private val MESSAGE_ACCENT = Color.rgb(0, 199, 183)
         private const val SELECTION_TAG = "selection"
         const val EXTRA_TAB = "tab"; const val EXTRA_NUMBER = "number"
         const val TAB_RECENTS = 0; const val TAB_CONTACTS = 1; const val TAB_KEYPAD = 2; const val TAB_MESSAGES = 3; const val TAB_LINK = 4

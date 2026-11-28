@@ -225,4 +225,6 @@
     <string name="link_diagnostics_subtitle">Connection and logs</string>
     <string name="link_sim_signal">Cellular signal %1$d/4 %2$s</string>
     <string name="link_plugged">(plugged in)</string>
+    <string name="messages_subtitle">Text messages from your phone</string>
+    <string name="messages_search">Search messages</string>
 </resources>
