@@ -22,6 +22,19 @@ class AudioOwnerTest {
         assertEquals("AMIR's A73", AudioOwner.where(null, "AMIR's A73"))
     }
 
+    @Test fun aShortLinkDropKeepsTheCallBridged() {
+        // Issue #13 (Galaxy A73): the link dropped mid-call and the iPhone was back 6.3 s later; the audio stopped at
+        // once, so the call jumped to the phone's loud earpiece meanwhile.
+        assertTrue(AudioOwner.holdForReconnect(running = true, targetUp = false, wantsAudio = true, paused = false, blocked = false, lostForMs = 6300))
+        assertFalse("not for ever", AudioOwner.holdForReconnect(true, false, true, false, false, AudioOwner.HOLD_MS))
+        assertFalse("the call ended", AudioOwner.holdForReconnect(true, false, false, false, false, 1000))
+        assertFalse("the link is up: nothing to wait for", AudioOwner.holdForReconnect(true, true, true, false, false, 1000))
+        assertFalse("a self-test paused it", AudioOwner.holdForReconnect(true, false, true, true, false, 1000))
+        assertFalse("this phone gives no call audio", AudioOwner.holdForReconnect(true, false, true, false, true, 1000))
+        assertFalse("nothing bridged", AudioOwner.holdForReconnect(false, false, true, false, false, 1000))
+        assertFalse("not lost", AudioOwner.holdForReconnect(true, false, true, false, false, -1))
+    }
+
     @Test fun theClientThatClaimedGetsItBackAfterReconnecting() {
         val again = Client("aa", "iPhone")   // a new link from the same iPhone (same static key)
         assertSame(again, AudioOwner.pick(listOf(second, again), { it.key }, claimedKey = "aa"))

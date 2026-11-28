@@ -39,6 +39,21 @@ object AudioOwner {
     /** The name a client shows for "on …": the owning client's, else the Android phone's own. */
     fun where(ownerName: String?, phoneName: String): String = ownerName ?: phoneName
 
+    /**
+     * How long a bridged call waits for its client after the client's link dropped. A Galaxy A73 (issue #13) lost the
+     * link mid-call and the iPhone was back 6.3–6.5 s later every time (six drops, 2026-11-25); until 1.2.5 the audio
+     * stopped at once, so the call jumped to the phone's own loud earpiece and back.
+     */
+    const val HOLD_MS = 10_000L
+
+    /**
+     * Keep the call bridged (the phone's earpiece and mic stay as they are, nothing reaches anyone) although no client
+     * should have its audio now: only while it [running], its client's link is down ([targetUp] false), the call still
+     * wants audio, nothing paused or blocked it, and for at most [HOLD_MS] since the link dropped ([lostForMs]).
+     */
+    fun holdForReconnect(running: Boolean, targetUp: Boolean, wantsAudio: Boolean, paused: Boolean, blocked: Boolean, lostForMs: Long): Boolean =
+        running && !targetUp && wantsAudio && !paused && !blocked && lostForMs in 0 until HOLD_MS
+
     /** Whether the remembered "no call audio" still holds ([remembered] and [current]: "fingerprint|versionCode"). */
     fun blocked(remembered: String?, fingerprint: String): Boolean = remembered != null && remembered == fingerprint
 }

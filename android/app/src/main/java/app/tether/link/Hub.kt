@@ -1195,10 +1195,23 @@ class Hub(private val app: TetherApp) : ConnectionListener {
             val changed = o !== announcedOwner
             announcedOwner = o
             val want = o != null && o.isUp && CallRegistry.wantsAudio() && !paused && !helper.audioBlocked()
+            // The client's link dropped mid-call: wait a little for it to come back (AudioOwner.HOLD_MS) instead of
+            // giving the call to the phone's earpiece for the few seconds a relink takes (issue #13).
+            val t = target
+            val now = SystemClock.elapsedRealtime()
+            if (running && t != null && !t.isUp) {
+                if (targetLostAt == 0L) {
+                    targetLostAt = now
+                    if (CallRegistry.wantsAudio()) LinkLog.add("call audio: the link to ${t.name} dropped during the call: the call stays bridged " +
+                        "for up to ${AudioOwner.HOLD_MS / 1000} s while it reconnects")
+                }
+            } else targetLostAt = 0L
+            val hold = !want && AudioOwner.holdForReconnect(running, t?.isUp == true, CallRegistry.wantsAudio(), paused, helper.audioBlocked(),
+                if (targetLostAt > 0) now - targetLostAt else -1)
             if (want && !running) start(o!!)
-            else if (!want && running) stop()
+            else if (!want && running && !hold) stop()
             else if (running && o != null && target !== o) retarget(o)
-            else if (running) { checkMethods(); muteLocalMic(true) }
+            else if (running) { checkMethods(); muteLocalMic(true); quietLocalEarpiece(true) }
             if (running) updateActive()
             if (changed) broadcastCalls()
             // Keep the helper alive between calls too, so answering never waits for a launch.
@@ -1271,7 +1284,8 @@ class Hub(private val app: TetherApp) : ConnectionListener {
             uplinkMuted = false
             oldCodec?.release()
             old?.sendUrgent(Message(T.AUDIO_STOP))
-            old?.let { LinkService.running?.peripheral?.tune(it.transport.address, high = false) }
+            // The same phone back on a new link keeps its fast interval: no slow-down request in between (issue #13).
+            old?.takeIf { it.transport.address != c.transport.address }?.let { LinkService.running?.peripheral?.tune(it.transport.address, high = false) }
             c.sendUrgent(startMessage(k))
             LinkService.running?.peripheral?.tune(c.transport.address, high = true)
             Log.i(TAG, "call audio moved from ${old?.name} to ${c.name}")
@@ -1309,6 +1323,7 @@ class Hub(private val app: TetherApp) : ConnectionListener {
             codec?.release()
             codec = null
             target = null
+            targetLostAt = 0L
             telecomWanted = false
             muteLocalMic(false)
             quietLocalEarpiece(false)
