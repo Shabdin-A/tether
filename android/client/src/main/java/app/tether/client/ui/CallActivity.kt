@@ -10,39 +10,57 @@ import app.tether.client.calls.nextAudioRoute
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.widget.GridLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 import app.tether.client.R
 import app.tether.client.calls.LocalCall
 import app.tether.client.calls.MicPolicy
+import app.tether.client.model.Call
 
 /**
  * The call screen (self-managed calls show the app's own): who, SIM, state and time; answer / decline while ringing;
  * mute, audio route (earpiece, speaker, Bluetooth, wired), hold, keypad and end. The screen goes off at the ear.
  */
 class CallActivity : Activity() {
-    private lateinit var root: LinearLayout
+    private val style by lazy { LinkViews(this) }
+    private lateinit var panel: LinearLayout
+    private lateinit var scroll: ScrollView
     private val main = Handler(Looper.getMainLooper())
     private val listener: () -> Unit = { render() }
     private var local: String? = null
     private var showKeys = false
     private var proximity: PowerManager.WakeLock? = null
-    private var seenCall = false
+    private var selectedCid: String? = null
+    private var renderedRemote: Call? = null
+    private var askedForMic = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setShowWhenLocked(true); setTurnScreenOn(true)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setPadding(dp(24), dp(48), dp(24), dp(32)); setBackgroundColor(col(R.color.background)) }
-        setContentView(root)
-        fitSystemBars(root)
-        handle(intent)
-        // A call is starting: ask for the microphone again if it is still refused (Android stops showing the question
-        // after two refusals; the warning below then says where to allow it).
-        if (MicPolicy.atCall(app.hasMicPermission()) == MicPolicy.CallCheck.ASK) {
-            app.journal.add("microphone: permission missing at call start: asking")
-            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 2)
+        showKeys = savedInstanceState?.getBoolean("keypad") ?: false
+        local = savedInstanceState?.getString(EXTRA_LOCAL)
+        selectedCid = savedInstanceState?.getString(EXTRA_REMOTE)
+        askedForMic = savedInstanceState?.getBoolean("askedForMic") ?: false
+        val viewport = ClientTabViewport(this).apply { setBackgroundColor(style.background) }
+        panel = viewport.column().apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPaddingRelative(paddingStart, dp(12), paddingEnd, dp(12))
         }
+        scroll = ScrollView(this).apply { addView(panel) }
+        viewport.canvas.addView(scroll)
+        setContentView(viewport)
+        fitSystemBars(viewport)
+        if (savedInstanceState == null) handle(intent) else render()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("keypad", showKeys)
+        outState.putString(EXTRA_LOCAL, local)
+        outState.putString(EXTRA_REMOTE, selectedCid)
+        outState.putBoolean("askedForMic", askedForMic)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -54,7 +72,8 @@ class CallActivity : Activity() {
     override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handle(intent) }
 
     private fun handle(i: android.content.Intent) {
-        i.getStringExtra(EXTRA_LOCAL)?.let { local = it }
+        i.getStringExtra(EXTRA_LOCAL)?.let { local = it; selectedCid = null }
+        i.getStringExtra(EXTRA_REMOTE)?.let { selectedCid = it; local = null }
         if (i.getBooleanExtra(EXTRA_ANSWER, false)) local?.let { l -> app.telecom.connection(l)?.onAnswer() }
         render()
     }
@@ -62,7 +81,7 @@ class CallActivity : Activity() {
     override fun onResume() {
         super.onResume()
         // In front now: the link service may become a microphone service (Android refuses that from the background).
-        if (app.calls.hasCalls) app.service(callMode = true)
+        if (current() != null) app.service(callMode = true)
         app.addListener(listener); tick(); render()
     }
     override fun onPause() { app.removeListener(listener); main.removeCallbacksAndMessages(null); super.onPause() }
@@ -72,92 +91,237 @@ class CallActivity : Activity() {
 
     private fun current(): LocalCall? {
         val calls = app.calls.calls
-        return calls.firstOrNull { it.local == local } ?: calls.firstOrNull()
+        return selectedCid?.let { cid -> calls.firstOrNull { it.cid == cid } }
+            ?: if (selectedCid == null) {
+                val requested = local
+                if (requested == null) calls.firstOrNull() else calls.firstOrNull { it.local == requested }
+            } else null
     }
+
+    private data class Presentation(
+        val call: LocalCall, val others: List<LocalCall>, val sim: String?, val warning: Int?,
+        val audio: CallAudioState?, val muted: Boolean, val keypad: Boolean, val canHold: Boolean,
+    )
+
+    private var presentation: Presentation? = null
+    private lateinit var stateLabel: TextView
 
     private fun render() {
         val c = current()
-        if (c == null) { if (seenCall || app.calls.calls.isEmpty()) { updateProximity(null); finish() }; return }
-        seenCall = true
+        if (c == null) {
+            val cid = selectedCid
+            val remote = when {
+                cid != null -> app.calls.remote[cid]
+                local != null -> local?.let(app.calls::remoteForLocal)
+                else -> app.calls.remote.values.singleOrNull()
+            }
+            updateProximity(null)
+            if (remote == null) finish() else renderRemote(remote)
+            return
+        }
+        renderedRemote = null
         local = c.local
-        root.removeAllViews()
-        root.addView(label(c.name ?: app.format(c.number), size = 30f, bold = true).apply { gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER })
-        if (c.name != null) root.addView(label(app.format(c.number), R.color.muted, 16f).apply { gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER })
-        val sim = app.state.simName(c.sub)
+        selectedCid = c.cid
+        if (!askedForMic && MicPolicy.atCall(app.hasMicPermission()) == MicPolicy.CallCheck.ASK) {
+            askedForMic = true
+            app.journal.add("microphone: permission missing at call start: asking")
+            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 2)
+        }
+        val view = Presentation(c, app.calls.calls.filter { it.local != c.local }, app.state.simName(c.sub),
+            app.micWarning?.let { micText(it) }, app.telecom.audioState, app.audio.muted, showKeys, app.calls.cidOf(c.local) != null)
+        if (view != presentation) {
+            val animateKeys = showKeys && presentation?.keypad == false
+            presentation = view
+            buildCall(view, animateKeys)
+        }
         val stateText = when (c.state) {
             "ringing" -> getString(R.string.incoming_call)
             "dialing", "connecting" -> getString(R.string.call_dialing)
             "holding" -> getString(R.string.call_on_hold)
-            else -> c.connectedAt?.let { val s = ((System.currentTimeMillis() - it) / 1000).coerceAtLeast(0); "%d:%02d".format(s / 60, s % 60) } ?: getString(R.string.call_active)
+            else -> {
+                val elapsed = c.connectedAt?.let { ((System.currentTimeMillis() - it) / 1000).coerceAtLeast(0) }
+                if (elapsed == null) getString(R.string.call_active)
+                else getString(R.string.call_active) + " · " + "%d:%02d".format(elapsed / 60, elapsed % 60)
+            }
         }
-        root.addView(label(listOfNotNull(stateText, sim).joinToString(" · "), R.color.muted, 16f).apply { gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER; setPadding(0, dp(8), 0, dp(32)) })
-        app.micWarning?.let { root.addView(label(getString(micText(it)), R.color.warn, 14f).apply { gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER; setPadding(0, 0, 0, dp(16)) }) }
-        val others = app.calls.calls.filter { it.local != c.local }
-        // Another call (waiting or on hold): tap to show it here.
-        for (o in others) root.addView(label("${o.name ?: app.format(o.number)} · ${getString(if (o.state == "holding") R.string.call_on_hold else R.string.call_waiting)}", R.color.warn, 14f).apply {
-            gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER; setPadding(dp(16), dp(12), dp(16), dp(12)); minHeight = dp(48)
-            pressableCard(R.color.surface, 24f) { local = o.local; render() }
-        }, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(8) })
-        phoneAppRow(c.local)
-        val conn = app.telecom.connection(c.local)
-        if (c.state == "ringing" && c.incoming) {
-            root.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
-            root.addView(actionRow(
-                roundAction(R.drawable.ic_call_end, getString(R.string.decline), R.color.bad, sizeDp = 72) { conn?.onReject() ?: app.calls.performEnd(c.local) },
-                roundAction(R.drawable.ic_call, getString(R.string.answer), R.color.ok, sizeDp = 72) { conn?.onAnswer() },
-            ))
-            updateProximity(null)
-            return
-        }
-        if (showKeys) {
-            val grid = GridLayout(this).apply { columnCount = 3; layoutDirection = View.LAYOUT_DIRECTION_LTR }
-            for (k in listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#")) grid.addView(dialKey(k, null, 64) {
-                app.calls.performDtmf(c.local, k)
-            }, GridLayout.LayoutParams().apply { width = dp(64); height = dp(64); setMargins(dp(12), dp(6), dp(12), dp(6)) })
-            // Its own width, so the column centres it: a full-width GridLayout keeps its keys at the left (#29).
-            root.addView(grid, LinearLayout.LayoutParams(-2, -2))
-        }
-        root.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
-        val audio = app.telecom.audioState
-        val route = audio?.route ?: CallAudioState.ROUTE_EARPIECE
-        val (routeName, routeIcon) = when (route) {
-            CallAudioState.ROUTE_SPEAKER -> R.string.route_speaker to R.drawable.ic_speaker
-            CallAudioState.ROUTE_BLUETOOTH -> R.string.route_bluetooth to R.drawable.ic_bluetooth
-            CallAudioState.ROUTE_WIRED_HEADSET -> R.string.route_wired to R.drawable.ic_headset
-            else -> R.string.route_speaker to R.drawable.ic_speaker   // on the earpiece: the switch reads "Speaker", off
-        }
-        val muted = app.audio.muted
-        val canHold = app.calls.cidOf(c.local) != null
-        root.addView(actionRow(*listOfNotNull(
-            roundAction(if (muted) R.drawable.ic_mic_off else R.drawable.ic_mic, getString(R.string.mute_mic), checked = muted) { app.telecom.setMuted(!muted) },
-            roundAction(routeIcon, getString(routeName), checked = route != CallAudioState.ROUTE_EARPIECE) { nextRoute(audio) },
-            roundAction(R.drawable.ic_dialpad, getString(R.string.keypad), checked = showKeys) { showKeys = !showKeys; render() },
-            if (canHold) roundAction(R.drawable.ic_pause, getString(R.string.hold), checked = c.held) { if (c.held) conn?.onUnhold() else conn?.onHold() } else null,
-        ).toTypedArray()))
-        root.addView(actionRow(
-            roundAction(R.drawable.ic_call_end, getString(R.string.end_call), R.color.bad, sizeDp = 72) { conn?.onDisconnect() ?: app.calls.performEnd(c.local) },
-        ).apply { setPadding(0, dp(16), 0, 0) })
-        updateProximity(route)
+        val text = listOfNotNull(stateText, view.sim).joinToString(" · ")
+        if (stateLabel.text.toString() != text) stateLabel.text = text
+        updateProximity(if (c.state == "ringing" && c.incoming) null else view.audio?.route ?: CallAudioState.ROUTE_EARPIECE)
     }
 
-    /**
-     * The way to the Phone app from here: its own call screen for a call that is in the Phone app; "Move to the Phone
-     * app" for a call in this screen when a Tether calling account is on; else, with the setting on, why the call is
-     * here and where to turn an account on.
-     */
+    private fun renderRemote(call: Call) {
+        if (renderedRemote == call) return
+        renderedRemote = call
+        selectedCid = call.cid
+        presentation = null
+        showKeys = false
+        panel.removeAllViews()
+        val who = app.displayName(call.num)
+        panel.addView(avatar(who, app.state.photo(call.num), 72), LinearLayout.LayoutParams(dp(72), dp(72)))
+        panel.addView(label(who, size = 32f, bold = true).apply { textAlignment = View.TEXT_ALIGNMENT_CENTER },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        val state = when (call.state) {
+            "dialing", "connecting" -> R.string.call_dialing
+            "holding" -> R.string.call_on_hold
+            else -> R.string.call_active
+        }
+        panel.addView(label(getString(state), R.color.accent, 16f, bold = true))
+        panel.addView(label(getString(R.string.call_elsewhere, who, call.where ?: getString(R.string.another_device)),
+            R.color.muted, 14f).apply { textAlignment = View.TEXT_ALIGNMENT_CENTER },
+            LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
+        panel.addView(controlRow(
+            control(R.drawable.ic_call_end, R.string.end_call, prominent = R.color.bad) { app.calls.endRemote(call.cid) },
+            control(R.drawable.ic_thread_call, R.string.move_here) { app.calls.take(call.cid) },
+        ))
+    }
+
+    private fun buildCall(view: Presentation, animateKeys: Boolean) {
+        val c = view.call
+        val scrollY = scroll.scrollY
+        panel.removeAllViews()
+        val who = c.name ?: app.format(c.number)
+        if (!view.keypad) panel.addView(avatar(who, app.state.photo(c.number), 72), LinearLayout.LayoutParams(dp(72), dp(72)))
+        panel.addView(label(who, size = if (view.keypad) 24f else 32f, bold = true).apply {
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        if (c.name != null) panel.addView(label(app.format(c.number), R.color.muted, 16f).apply {
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            textDirection = View.TEXT_DIRECTION_LTR
+        }, LinearLayout.LayoutParams(-1, -2))
+        stateLabel = label("", R.color.accent, 16f, bold = true).apply { textAlignment = View.TEXT_ALIGNMENT_CENTER }
+        panel.addView(stateLabel, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
+        view.warning?.let { warning ->
+            panel.addView(label(getString(warning), R.color.warn, 14f).apply { textAlignment = View.TEXT_ALIGNMENT_CENTER })
+        }
+        for (other in view.others) {
+            val state = if (other.held) R.string.call_on_hold else R.string.call_waiting
+            panel.addView(label("${other.name ?: app.format(other.number)} · ${getString(state)}", R.color.warn, 14f).apply {
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                minimumHeight = dp(48)
+                setOnClickListener { local = other.local; selectedCid = other.cid; render() }
+            }, LinearLayout.LayoutParams(-1, -2))
+        }
+        phoneAppRow(c.local)
+        if (c.state == "ringing" && c.incoming) {
+            panel.addView(controlRow(
+                control(R.drawable.ic_call_end, R.string.decline, prominent = R.color.bad) {
+                    app.telecom.connection(c.local)?.onReject() ?: app.calls.performEnd(c.local)
+                },
+                control(R.drawable.ic_thread_call, R.string.answer, prominent = R.color.ok) {
+                    app.telecom.connection(c.local)?.onAnswer()
+                },
+            ))
+            return
+        }
+
+        val route = view.audio?.route ?: CallAudioState.ROUTE_EARPIECE
+        val routeIcon = when (route) {
+            CallAudioState.ROUTE_BLUETOOTH -> R.drawable.ic_link_bluetooth
+            CallAudioState.ROUTE_WIRED_HEADSET -> R.drawable.ic_call_headset
+            CallAudioState.ROUTE_SPEAKER -> R.drawable.ic_call_speaker
+            else -> R.drawable.ic_thread_call
+        }
+        val routeName = when (route) {
+            CallAudioState.ROUTE_SPEAKER -> R.string.route_speaker
+            CallAudioState.ROUTE_BLUETOOTH -> R.string.route_bluetooth
+            CallAudioState.ROUTE_WIRED_HEADSET -> R.string.route_wired
+            else -> R.string.route_earpiece
+        }
+        val controls = mutableListOf(
+            control(R.drawable.ic_call_mic, if (view.muted) R.string.unmute_mic else R.string.mute_mic, view.muted) {
+                app.telecom.setMuted(!app.audio.muted)
+            },
+            control(routeIcon, routeName, route != CallAudioState.ROUTE_EARPIECE) { nextRoute(app.telecom.audioState) },
+            control(R.drawable.ic_link_keypad, R.string.keypad, view.keypad) { showKeys = !showKeys; render() },
+        )
+        if (view.canHold) controls += control(R.drawable.ic_call_hold, if (c.held) R.string.resume else R.string.hold, c.held) {
+            val connection = app.telecom.connection(c.local)
+            if (c.held) connection?.onUnhold() else connection?.onHold()
+        }
+        panel.addView(controlRow(*controls.toTypedArray()))
+        if (view.keypad) {
+            val keypad = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutDirection = View.LAYOUT_DIRECTION_LTR
+            }
+            val letters = listOf("", "ABC", "DEF", "GHI", "JKL", "MNO", "PQRS", "TUV", "WXYZ", "", "", "")
+            "123456789*0#".chunked(3).forEachIndexed { row, digits ->
+                keypad.addView(controlRow(*digits.mapIndexed { column, digit ->
+                    val caption = letters[row * 3 + column]
+                    LinearLayout(this).apply {
+                        gravity = Gravity.CENTER
+                        orientation = LinearLayout.VERTICAL
+                        minimumHeight = dp(48)
+                        background = style.shape(col(R.color.surface), 26)
+                        isFocusable = true
+                        contentDescription = digit.toString()
+                        addView(label(digit.toString(), size = 23f, bold = true).apply {
+                            textAlignment = View.TEXT_ALIGNMENT_CENTER
+                            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                        })
+                        if (caption.isNotEmpty()) addView(label(caption, R.color.muted, 9f).apply {
+                            textAlignment = View.TEXT_ALIGNMENT_CENTER
+                            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                        })
+                        setOnClickListener { app.calls.performDtmf(c.local, digit.toString()) }
+                    }
+                }.toTypedArray()))
+            }
+            panel.addView(keypad, LinearLayout.LayoutParams(-1, -2))
+            if (animateKeys) { keypad.alpha = 0f; keypad.animate().alpha(1f).setDuration(160).start() }
+        }
+        panel.addView(control(R.drawable.ic_call_end, R.string.end_call, prominent = R.color.bad) {
+            app.telecom.connection(c.local)?.onDisconnect() ?: app.calls.performEnd(c.local)
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+        if (!animateKeys) scroll.post { scroll.scrollTo(0, scrollY) }
+    }
+
+    private fun controlRow(vararg controls: View) = row().apply {
+        gravity = Gravity.TOP
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) }
+        controls.forEach { addView(it, LinearLayout.LayoutParams(0, -2, 1f).apply {
+            marginStart = dp(3); marginEnd = dp(3)
+        }) }
+    }
+
+    private fun control(icon: Int, title: Int, active: Boolean = false, prominent: Int? = null, action: () -> Unit) =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            isFocusable = true
+            isSelected = active
+            contentDescription = getString(title)
+            setOnClickListener { action() }
+            val size = if (prominent != null) 64 else 48
+            addView(android.widget.ImageView(context).apply {
+                val fill = prominent ?: if (active) R.color.accent else R.color.surface
+                background = style.shape(col(fill), size / 2)
+                setImageResource(icon)
+                setColorFilter(col(if (active || prominent != null) R.color.background else R.color.text))
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }, LinearLayout.LayoutParams(dp(size), dp(size)))
+            addView(label(getString(title), size = 12f).apply {
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
+        }
+
     private fun phoneAppRow(local: String) {
         val t = app.telecom
         when {
-            t.inPhoneApp(local) -> root.addView(button(getString(R.string.open_phone_app_screen), Look.TONAL, iconId = R.drawable.ic_call) {
+            t.inPhoneApp(local) -> panel.addView(button(getString(R.string.open_phone_app_screen), Look.TONAL, iconId = R.drawable.ic_call) {
                 if (t.showPhoneAppCallScreen()) finish()
             })
-            t.canMoveToPhoneApp(local) -> root.addView(button(getString(R.string.move_to_phone_app), Look.TONAL, iconId = R.drawable.ic_call) {
+            t.canMoveToPhoneApp(local) -> panel.addView(button(getString(R.string.move_to_phone_app), Look.TONAL, iconId = R.drawable.ic_call) {
                 // The Phone app rings a ringing call itself; a running one shows in its call screen once moved.
                 if (t.moveToPhoneApp(local)) main.postDelayed({ t.showPhoneAppCallScreen(); finish() }, 800)
             })
             t.usePhoneApp -> {
-                root.addView(label(getString(R.string.call_not_in_phone_app), R.color.muted, 13f).apply { gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER })
-                root.addView(button(getString(R.string.phone_app_open_accounts), Look.TEXT) { t.openCallingAccounts(this) })
+                panel.addView(label(getString(R.string.call_not_in_phone_app), R.color.muted, 13f).apply { gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER })
+                panel.addView(button(getString(R.string.phone_app_open_accounts), Look.TEXT) { t.openCallingAccounts(this) })
             }
         }
     }
@@ -176,5 +340,5 @@ class CallActivity : Activity() {
         else if (!want && proximity != null) { proximity?.let { if (it.isHeld) it.release() }; proximity = null }
     }
 
-    companion object { const val EXTRA_LOCAL = "local"; const val EXTRA_ANSWER = "answer" }
+    companion object { const val EXTRA_LOCAL = "local"; const val EXTRA_ANSWER = "answer"; const val EXTRA_REMOTE = "remoteCid" }
 }

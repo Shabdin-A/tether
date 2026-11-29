@@ -476,7 +476,7 @@ class TetherConnection(private val app: ClientApp, val local: String, val inPhon
         setActive()
         app.notifier.cancelIncoming(local)
         app.telecom.refreshAudio()
-        if (!inPhoneApp) app.openCallScreen()   // the Phone app shows its own call screen
+        app.openCallScreen(localId = local)
     }
 
     override fun onReject() = end(DisconnectCause.REJECTED)
@@ -508,15 +508,11 @@ open class TetherConnectionService : ConnectionService() {
     protected open val inPhoneApp = false
 
     override fun onCreateIncomingConnection(account: PhoneAccountHandle?, request: ConnectionRequest): Connection {
-        val local = request.extras?.getString(TelecomBridge.EXTRA_LOCAL)
-            ?: request.extras?.getBundle(TelecomManager.EXTRA_INCOMING_CALL_EXTRAS)?.getString(TelecomBridge.EXTRA_LOCAL)
-            ?: return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR))
-        val conn = TetherConnection(app, local, inPhoneApp)
-        // A started call (answered on the Android phone, moved here) is live already: no ring.
-        val started = request.extras?.getBoolean(TelecomBridge.EXTRA_STARTED) == true ||
-            request.extras?.getBundle(TelecomManager.EXTRA_INCOMING_CALL_EXTRAS)?.getBoolean(TelecomBridge.EXTRA_STARTED) == true
-        if (!started) conn.setRinging() else conn.setActive()
+        val local = request.extras?.getString(TelecomBridge.EXTRA_LOCAL) ?: return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR))
+        val conn = TetherConnection(app, local)
         conn.setInitialized()
+        // A started call (answered on the Android phone, moved here) is live already: no ring.
+        if (request.extras?.getBoolean(TelecomBridge.EXTRA_STARTED) != true) conn.setRinging() else conn.setActive()
         return app.telecom.attach(local, conn)
     }
 
@@ -533,21 +529,9 @@ open class TetherConnectionService : ConnectionService() {
         val extras = request.extras
         val mirrored = extras?.getString(TelecomBridge.EXTRA_LOCAL)
         val local = mirrored ?: UUID.randomUUID().toString()
-        // A carrier code (*123#) dialed in the Phone app with this app's account: no call (it would never connect, and
-        // the Android phone's own dialog would wait there): it runs as USSD in this app's carrier-code screen.
-        if (mirrored == null && UssdCodes.valid(request.address?.schemeSpecificPart.orEmpty())) {
-            app.openUssd(request.address!!.schemeSpecificPart, app.telecom.subOf(account))
-            return Connection.createFailedConnection(DisconnectCause(DisconnectCause.CANCELED, "USSD"))
-        }
-        // Dialed in the Phone app with this app's account but nothing to call through: say why there.
-        if (mirrored == null && !app.link.isConnected) {
-            app.problem(Problem.NOT_CONNECTED)
-            return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR, app.getString(R.string.err_not_connected),
-                app.getString(R.string.err_not_connected), "link down"))
-        }
-        val conn = TetherConnection(app, local, inPhoneApp)
-        conn.setDialing()
+        val conn = TetherConnection(app, local)
         conn.setInitialized()
+        conn.setDialing()
         val number = request.address?.schemeSpecificPart.orEmpty()
         conn.setAddress(request.address, TelecomManager.PRESENTATION_ALLOWED)
         val attached = app.telecom.attach(local, conn)
@@ -559,7 +543,7 @@ open class TetherConnectionService : ConnectionService() {
                 ?: app.telecom.subOf(account) ?: if (inPhoneApp) app.state.preferredSim(number) else null
             app.service(callMode = true)
             app.calls.performStart(local, number, sub)
-            if (!inPhoneApp) app.openCallScreen()
+            app.openCallScreen(localId = local)
         }
         return attached
     }

@@ -74,7 +74,7 @@
     <string name="adb_notif_action">وارد کردن کد</string>
     <string name="adb_notif_hint">کد جفت‌سازی</string>
     <string name="adb_pairing">در حال جفت کردن…</string>
-    <string name="adb_paired">با اشکال‌زدایی بی‌سیم جفت شد. دستیار صدا در حال شروع است…</string>
+    <string name="adb_paired">جفت‌سازی انجام شد. ADB متصل است، مجوزها تأیید شدند و دستیار صدا در حال اجراست.</string>
     <string name="call_ongoing">تماس در جریان است</string>
     <string name="call_decline">رد کردن</string>
     <string name="call_answer">پاسخ</string>
@@ -127,7 +127,6 @@
     <string name="adb_no_wifi">اشکال‌زدایی بی‌سیم به Wi-Fi نیاز دارد. به یک شبکه Wi-Fi وصل شوید، دوباره «جفت کردن دستگاه با کد» را باز کنید و کد جدید را وارد کنید.</string>
     <string name="adb_no_service">پنجره جفت کردن پیدا نشد. «جفت کردن دستگاه با کد» را روی صفحه باز نگه دارید (این اعلان را روی آن پایین بکشید یا از صفحه دوتایی استفاده کنید) و کد را تا وقتی نمایش داده می‌شود وارد کنید.</string>
     <string name="adb_wrong_code">کد اشتباه بود یا منقضی شده است. دوباره «جفت کردن دستگاه با کد» را باز کنید و کد ۶ رقمی جدید را وارد کنید.</string>
-    <string name="adb_paired_no_connect">جفت شد، اما هنوز اتصال برقرار نشد (%1$s). تا وقتی اشکال‌زدایی بی‌سیم روشن است، Tether دوباره تلاش می‌کند.</string>
     <!-- راهنما › گزارش مشکل -->
     <string name="section_help">راهنما</string>
     <string name="report_title">ارسال گزارش مشکل</string>
@@ -137,4 +136,29 @@
     <string name="report_failed">گزارش ساخته نشد: %1$s</string>
     <string name="report_copied_short">کپی شد، برای کلیپ‌بورد به %1$d کیلوبایت کوتاه شد. «اشتراک‌گذاری» کل فایل را می‌فرستد.</string>
     <string name="action_close">بستن</string>
+    <string name="adb_paired_no_connect">جفت‌سازی انجام شد، اما ADB هنوز متصل نیست. وای‌فای و اشکال‌زدایی بی‌سیم را روشن نگه دارید تا Tether دوباره تلاش کند. %1$s</string>
+    <string name="adb_paired_permissions">جفت‌سازی و اتصال برقرارند، اما مجوزهای لازم تأیید نشدند. مجوزها را در راه‌اندازی Tether و تنظیمات گوشی بررسی کنید. %1$s</string>
+    <string name="adb_paired_helper_not_ready">جفت‌سازی و اتصال برقرارند و مجوزها تأیید شدند، اما دستیار صدا آماده نیست. اشکال‌زدایی بی‌سیم را روشن نگه دارید و در بخش صدای تماس روی «شروع» بزنید. %1$s</string>
+    <string name="adb_checking">در حال بررسی اتصال ADB…</string>
+    <string name="adb_identity_recorded">جفت‌سازی در این گوشی ثبت شده است</string>
+    <string name="adb_check_connection">بررسی اتصال ADB</string>
+    <string name="adb_copy_diagnostics">کپی گزارش ADB</string>
+    <string name="adb_pair_again">جفت‌سازی دوباره</string>
+    <string name="adb_port_probe">آزمایش پورت محلی ADB</string>
+    <string name="adb_port_testing">در حال آزمایش اتصال‌های محلی TCP…</string>
+    <string name="adb_port_hint">پورت اتصال</string>
+    <string name="adb_port_instructions">پورت بخش IP address &amp; Port را از صفحهٔ اصلی Wireless debugging وارد کنید. پورت پنجرهٔ جفت‌سازی را وارد نکنید.</string>
+    <string name="adb_port_run">اجرای آزمایش</string>
+    <string name="adb_port_invalid">پورتی بین ۱ تا ۶۵۵۳۵ وارد کنید.</string>
+    <string name="adb_port_report">گزارش TCP محلی ADB · پورت %1$d</string>
+    <string name="adb_port_open">اتصال TCP برقرار شد</string>
+    <string name="adb_port_refused">اتصال رد شد</string>
+    <string name="adb_port_timeout">مهلت اتصال TCP تمام شد</string>
+    <string name="adb_port_error">خطای اتصال TCP</string>
+    <string name="adb_port_no_address">آزمایش وای‌فای انجام نشد: آدرس وای‌فای موجود نیست</string>
+    <string name="adb_port_tcp_only">این گزارش فقط دسترسی TCP را بررسی می‌کند. TLS و احراز هویت ADB آزمایش نشده‌اند.</string>
+    <string name="dialer_role_not_granted">اندروید نقش برنامهٔ پیش‌فرض تلفن را اعطا نکرد. در تنظیمات، برنامه‌های پیش‌فرض › برنامهٔ تلفن را بررسی کنید.</string>
+    <string name="dialer_role_unconfirmed">اندروید موفقیت را گزارش کرد، اما تتر اکنون برنامهٔ پیش‌فرض تلفن نیست.</string>
+    <string name="dialer_role_unavailable">نقش برنامهٔ پیش‌فرض تلفن در این دستگاه یا نمایه در دسترس نیست.</string>
+    <string name="dialer_role_request_failed">اندروید نتوانست درخواست برنامهٔ پیش‌فرض تلفن را باز کند. در تنظیمات، برنامه‌های پیش‌فرض › برنامهٔ تلفن را بررسی کنید.</string>
 </resources>

@@ -10,6 +10,14 @@ import app.tether.core.numberKey
 import org.json.JSONArray
 import org.json.JSONObject
 
+// Optional Contacts messages used with a Host that implements the safe editing protocol.
+private const val CONTACT_UPDATE_SAFE = "contact.update.safe"
+private const val CONTACT_PHONE_DELETE_PREPARE = "contact.phone.delete.prepare"
+private const val CONTACT_PHONE_DELETE_PREPARED = "contact.phone.delete.prepared"
+private const val CONTACT_PHONE_DELETE = "contact.phone.delete"
+private const val CONTACT_PHONE_DELETE_RESULT = "contact.phone.delete.result"
+private const val CONTACT_PHONE_DELETE_CAP = "contact-phone-delete/1"
+
 /** What the state needs from the link. */
 interface LinkPort {
     val isConnected: Boolean
@@ -34,6 +42,8 @@ data class Problem(val kind: String, val detail: String? = null) {
     companion object {
         const val NOT_CONNECTED = "not_connected"; const val NOT_DELETED = "not_deleted"; const val NOT_SENT = "not_sent"
         const val CONTACT_NOT_SAVED = "contact_not_saved"; const val SEND_LATER = "send_later"; const val TOO_LONG = "too_long"
+        const val CONTACT_CHANGED = "contact_changed"; const val CONTACT_SAVE_UNKNOWN = "contact_save_unknown"
+        const val CONTACT_DELETE_FAILED = "contact_delete_failed"
         const val CALL_FAILED = "call_failed"; const val NO_ANSWER = "no_answer"; const val PAIRING_EXPIRED = "pairing_expired"
         const val UNKNOWN_DEVICE = "unknown_device"; const val OTHER = "other"
     }
@@ -51,6 +61,60 @@ data class OutboxItem(val to: String, val body: String, val sub: Int?, val place
 class ClientState(private val link: LinkPort, private val fx: Effects) {
     var sms: List<Sms> = emptyList(); private set
     var contacts: List<Contact> = emptyList(); private set
+    private val contactDefaults = mutableMapOf<Long, String>()
+    var canDeleteContactPhone = false; private set
+    data class PhoneDeletion(val contact: Long, val number: String, val request: Int, val token: String? = null,
+                             val confirming: Boolean = false)
+    var phoneDeletion: PhoneDeletion? = null; private set
+    private var refreshDeletedContacts = false
+
+    fun prepareContactPhoneDeletion(contact: Long, number: String) {
+        if (phoneDeletion != null || !canDeleteContactPhone || !requireLink()) return
+        if (contacts.singleOrNull { it.id == contact }?.phones?.count { it.n == number } != 1) {
+            finishPhoneDeletion("stale")
+            return
+        }
+        val request = link.send(CONTACT_PHONE_DELETE_PREPARE,
+            JSONObject().put("contactId", contact).put("number", number), expectReply = true)
+        if (request == 0) { finishPhoneDeletion("disconnected"); return }
+        trackPhoneDeletion(PhoneDeletion(contact, number, request))
+    }
+
+    fun cancelContactPhoneDeletion() {
+        if (phoneDeletion?.confirming == false) finishPhoneDeletion()
+    }
+
+    fun confirmContactPhoneDeletion(token: String) {
+        val prepared = phoneDeletion?.takeIf { it.token == token && !it.confirming } ?: return
+        val request = link.send(CONTACT_PHONE_DELETE, JSONObject().put("token", token), expectReply = true)
+        if (request == 0) { finishPhoneDeletion("disconnected"); return }
+        trackPhoneDeletion(prepared.copy(request = request, token = null, confirming = true))
+    }
+
+    private fun trackPhoneDeletion(pending: PhoneDeletion) {
+        phoneDeletion = pending
+        fx.changed()
+        fx.schedule(30_000) {
+            if (phoneDeletion === pending) {
+                finishPhoneDeletion(when {
+                    pending.confirming -> "unverified"
+                    pending.token != null -> "expired"
+                    else -> "no_answer"
+                })
+            }
+        }
+    }
+
+    private fun finishPhoneDeletion(code: String? = null, sync: Boolean = true) {
+        val wasConfirming = phoneDeletion?.confirming == true
+        phoneDeletion = null
+        if (code != null) problem = Problem(Problem.CONTACT_DELETE_FAILED, code)
+        if (wasConfirming) {
+            refreshDeletedContacts = true
+            if (sync) resync()
+        }
+        fx.changed()
+    }
     var recents: List<CallEntry> = emptyList(); private set
     var contactsVersion = ""; private set
     val readUpTo = HashMap<Long, Long>()
@@ -88,6 +152,7 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
     private val pendingRead = HashMap<Long, Long>()
     private val pendingSms = HashMap<Int, Long>()      // request id → placeholder id
     private var incrementalSync = false
+    private var pendingSmsBatchHigh: Long? = null
     private var contactsPageStart = true
     private var incomingContacts = ArrayList<Contact>()
     private var pendingIdsSms = ArrayList<LongArray>()
@@ -98,14 +163,51 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
 
     // ------------------------------------------------------------------ derived data
 
+    private var conversationSource: List<Sms>? = null
+    private var conversationReadMarks: Map<Long, Long> = emptyMap()
+    private var conversationList: List<Conversation> = emptyList()
+
     val conversations: List<Conversation>
-        get() = sms.groupBy { it.thread }.mapNotNull { (thread, msgs) ->
+        get() {
+            // State updates replace the SMS list, while read marks can change in place.
+            if (conversationSource !== sms || conversationReadMarks != readUpTo) {
+                conversationList = buildConversations()
+                conversationSource = sms
+                conversationReadMarks = readUpTo.toMap()
+            }
+            return conversationList
+        }
+
+    private fun buildConversations(): List<Conversation> =
+        sms.groupBy { it.thread }.mapNotNull { (thread, msgs) ->
             val last = msgs.maxWithOrNull(compareBy({ it.date }, { it.id })) ?: return@mapNotNull null
             val seen = readUpTo[thread] ?: 0
             Conversation(thread, last.addr, last, msgs.count { it.incoming && !it.read && it.id > seen })
         }.sortedByDescending { it.last.date }
 
     val unreadTotal get() = conversations.sumOf { it.unread }
+
+    fun searchConversations(conversations: List<Conversation>, query: String): List<Conversation> {
+        if (query.isEmpty()) return conversations
+        val matches = HashSet<Long>()
+        val remaining = HashSet<Long>()
+        for (conversation in conversations) {
+            val address = conversation.address
+            if (Search.matches(query, listOfNotNull(name(address)), listOf(address))) matches.add(conversation.thread)
+            else remaining.add(conversation.thread)
+        }
+        if (query.length > 1 && remaining.isNotEmpty()) {
+            val foldedQuery = Search.fold(query)
+            for (message in sms) {
+                if (message.thread in remaining && Search.fold(message.body).contains(foldedQuery)) {
+                    matches.add(message.thread)
+                    remaining.remove(message.thread)
+                    if (remaining.isEmpty()) break
+                }
+            }
+        }
+        return conversations.filter { it.thread in matches }
+    }
 
     fun messages(thread: Long) = sms.filter { it.thread == thread }.sortedWith(compareBy({ it.date }, { it.id }))
 
@@ -234,16 +336,82 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
 
     private fun phonesJson(phones: List<Phone>) = JSONArray(phones.map { it.json() })
 
-    fun addContact(name: String, phones: List<Phone>, emails: List<String>) {
-        if (!requireLink()) return
-        link.send(T.CONTACT_ADD, JSONObject().put("name", name).put("phones", phonesJson(phones)).put("emails", JSONArray(emails)), expectReply = true)
+    // Keep the complete dialing destination, including its prefix. A suffix match is unsafe here.
+    private fun matchingPhone(contact: Contact, key: String): Phone? =
+        contact.phones.singleOrNull { dialable(it.n) == key }
+
+    fun defaultContactPhone(contact: Contact): Phone? =
+        contactDefaults[contact.id]?.let { matchingPhone(contact, it) }
+
+    fun setDefaultContactPhone(id: Long, number: String?): Boolean {
+        val contact = contacts.singleOrNull { it.id == id } ?: return false
+        if (number == null) {
+            if (contactDefaults.remove(id) != null) persist()
+            return true
+        }
+        val key = dialable(number)
+        if (key.isEmpty() || matchingPhone(contact, key) == null) return false
+        if (contactDefaults.put(id, key) != key) persist()
+        return true
     }
 
-    fun updateContact(id: Long, name: String, phones: List<Phone>, emails: List<String>) {
-        if (!requireLink()) return
-        contacts = contacts.map { if (it.id == id) it.copy(name = name, phones = phones, emails = emails) else it }
-        rebuildIndex()
-        link.send(T.CONTACT_UPDATE, JSONObject().put("id", id).put("name", name).put("phones", phonesJson(phones)).put("emails", JSONArray(emails)), expectReply = true)
+    private fun pruneContactDefaults() {
+        if (contactDefaults.isEmpty()) return
+        val byId = contacts.groupBy { it.id }
+        contactDefaults.entries.removeAll { (id, key) ->
+            byId[id]?.singleOrNull()?.let { matchingPhone(it, key) } == null
+        }
+    }
+
+    data class ContactSave(val token: String, val pending: Boolean, val error: Problem? = null)
+
+    private data class ContactRequest(val reply: Int, val original: Contact?, val edited: Contact)
+    private var contactRequest: ContactRequest? = null
+    var contactSave: ContactSave? = null; private set
+
+    fun saveContact(token: String, original: Contact?, name: String, phones: List<Phone>, emails: List<String>,
+                    version: String = contactsVersion) {
+        if (contactRequest != null) return
+        val current = original?.let { c -> contacts.singleOrNull { it.id == c.id } }
+        val error = when {
+            !link.isConnected -> Problem(Problem.NOT_CONNECTED)
+            original != null && (version != contactsVersion || current == null || current.name != original.name ||
+                current.phones != original.phones || current.emails != original.emails) -> Problem(Problem.CONTACT_CHANGED)
+            else -> null
+        }
+        if (error != null) {
+            contactSave = ContactSave(token, false, error)
+            fx.changed()
+            return
+        }
+        val body = JSONObject().put("name", name).put("phones", phonesJson(phones)).put("emails", JSONArray(emails))
+        original?.let {
+            body.put("id", it.id).put("version", version)
+                .put("before", JSONObject().put("name", it.name).put("phones", phonesJson(it.phones))
+                    .put("emails", JSONArray(it.emails)))
+        }
+        val reply = link.send(if (original == null) T.CONTACT_ADD else CONTACT_UPDATE_SAFE, body, expectReply = true)
+        if (reply == 0) {
+            contactSave = ContactSave(token, false, Problem(Problem.NOT_CONNECTED))
+            fx.changed()
+            return
+        }
+        val request = ContactRequest(reply, current, Contact(original?.id ?: -1, name, phones, emails, null, false))
+        contactRequest = request
+        contactSave = ContactSave(token, true)
+        fx.changed()
+        fx.schedule(35_000) {
+            if (contactRequest === request) {
+                finishContactSave(Problem(Problem.CONTACT_SAVE_UNKNOWN))
+                resync()
+            }
+        }
+    }
+
+    private fun finishContactSave(error: Problem?) {
+        contactRequest = null
+        contactSave = contactSave?.copy(pending = false, error = error)
+        fx.changed()
     }
 
     fun setStarred(id: Long, on: Boolean) {
@@ -255,23 +423,34 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
 
     // ------------------------------------------------------------------ network switches
 
+    private class NetworkRequest(val id: Int)
+    private var netWrite: NetworkRequest? = null
+
     private fun netRequest(pending: String, body: JSONObject) {
-        if (!link.isConnected) return
+        if (!link.isConnected || netPending != null) return
         netPending = pending
         netError = null
-        link.send(T.NET_SET, body, expectReply = true)
+        val id = link.send(T.NET_SET, body, expectReply = true)
+        if (id == 0) { netPending = null; netError = Problem.NO_ANSWER; fx.changed(); return }
+        val request = NetworkRequest(id)
+        netWrite = request
         // A lost reply must not leave the switches greyed out for ever.
-        fx.schedule(35_000) { if (netPending == pending) { netPending = null; netError = Problem.NO_ANSWER; fx.changed() } }
+        fx.schedule(35_000) {
+            if (netWrite === request) {
+                netWrite = null; netPending = null; netError = Problem.NO_ANSWER; fx.changed()
+            }
+        }
         fx.changed()
     }
 
     fun setNet(what: String, on: Boolean) = netRequest(what, JSONObject().put("what", what).put("on", on))
     fun setDataSim(sub: Int) = netRequest("dataSub", JSONObject().put("what", "dataSub").put("on", true).put("sub", sub))
     fun setNetworkMode(slot: Int, mode: String) = netRequest("rat$slot", JSONObject().put("what", "rat").put("on", true).put("slot", slot).put("mode", mode))
-    private var netAskedAt = 0L
+    private var netAskedAt: Long? = null
+    var hasLiveStatus = false; private set
     /** Asks for the switches' state (at most every 10 s: the Link screen asks on every redraw until it has one). */
     fun refreshNet() {
-        if (!link.isConnected || fx.now() - netAskedAt < 10_000) return
+        if (!link.isConnected || netAskedAt?.let { fx.now() - it < 10_000 } == true) return
         netAskedAt = fx.now()
         link.send(T.NET_GET, JSONObject(), expectReply = true)
     }
@@ -313,10 +492,11 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
         syncing = true
         incrementalSync = !full && sms.isNotEmpty()
         // From the last *completed* sync: a text that came in live during an interrupted sync must not make us skip the rest.
-        val lastSms = if (full) 0 else smsSyncedUpTo ?: (sms.maxOfOrNull { it.id } ?: 0)
+        val lastSms = if (full) 0 else smsSyncedUpTo ?: 0
+        if (pendingSmsBatchHigh == null) pendingSmsBatchHigh = lastSms
         val lastCall = if (full) 0 else recents.maxOfOrNull { it.id } ?: 0
         lastSyncArgs = Triple(codecs, kind, name); lastCaps = caps
-        link.send(T.SYNC, JSONObject().put("sms", maxOf(0, lastSms)).put("calls", maxOf(0, lastCall)).put("contacts", if (full) "" else contactsVersion)
+        link.send(T.SYNC, JSONObject().put("sms", maxOf(0, lastSms)).put("calls", maxOf(0, lastCall)).put("contacts", if (full || refreshDeletedContacts) "" else contactsVersion)
             .put("codecs", JSONArray(codecs)).put("client", JSONObject().put("kind", kind).put("name", name))
             .apply { if (caps.isNotEmpty()) put(Ext.CAPS, JSONArray(caps)) })
         // Conversations read while out of reach.
@@ -383,6 +563,9 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
     }
 
     fun linkDown() {
+        canDeleteContactPhone = false
+        phoneDeletion?.let { finishPhoneDeletion(if (it.confirming) "unverified" else "disconnected", sync = false) }
+        if (contactRequest != null) finishContactSave(Problem(Problem.CONTACT_SAVE_UNKNOWN))
         // A sync cut off mid-way must start clean next time.
         contactsPageStart = true
         incomingContacts = ArrayList()
@@ -390,25 +573,39 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
         // Answers to texts in flight are lost with the link: the next sync settles them (the real row replaces a sent
         // placeholder; an unconfirmed one turns Not delivered after 2 min, never resent).
         pendingSms.clear()
+        pendingSmsBatchHigh = null
         syncing = false
+        hasLiveStatus = false
+        net = null
+        netAskedAt = null
+        netError = null
         netPending = null
+        netWrite = null
         fx.changed()
     }
 
     /** A control message that is not about calls or call audio. Returns false when it was not one of ours. */
     fun received(t: String, b: JSONObject, re: Int?): Boolean {
         when (t) {
-            T.STATUS -> status = b   // saved with the next real change
+            T.STATUS -> {
+                status = b   // saved with the next real change
+                hasLiveStatus = true
+                canDeleteContactPhone = b.opt("contactPhoneDelete") == CONTACT_PHONE_DELETE_CAP
+            }
             T.SMS_BATCH -> {
                 val items = b.optJSONArray("items").mapObjects(::smsOf)
+                // Live sms.new may overtake a batch or arrive during a capped sync. Only the completed
+                // batch establishes how far the Host has actually replayed its history.
+                val high = maxOf(pendingSmsBatchHigh ?: smsSyncedUpTo ?: 0, items.maxOfOrNull { it.id } ?: 0)
                 val recent = fx.now() - 6 * 3600_000L
                 merge(items, notify = incrementalSync && items.any { it.incoming && !it.read && it.date > recent })
                 if (!b.optBoolean("more")) {
                     syncing = false; lastSync = fx.now()
-                    smsSyncedUpTo = sms.filter { it.id > 0 }.maxOfOrNull { it.id }
+                    smsSyncedUpTo = high
+                    pendingSmsBatchHigh = null
                     failStalePlaceholders()
                     persist()
-                }
+                } else pendingSmsBatchHigh = high
             }
             T.SMS_NEW -> b.optJSONObject("item")?.let { val m = smsOf(it); merge(listOf(m), notify = m.incoming) }
             T.SMS_READ -> {
@@ -489,14 +686,51 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
                 if (!more) {
                     contacts = incomingContacts.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
                     contactsVersion = b.optString("version")
+                    refreshDeletedContacts = false
                     incomingContacts = ArrayList()
+                    pruneContactDefaults()
                     rebuildIndex()
                     persist()
                 }
             }
             T.CONTACT_RESULT -> {
-                if (!b.optBoolean("ok")) problem = Problem(Problem.CONTACT_NOT_SAVED, b.optStringOrNull("err"))
+                val request = contactRequest?.takeIf { it.reply == re }
+                val error = if (b.optBoolean("ok")) null else Problem(Problem.CONTACT_NOT_SAVED, b.optStringOrNull("err"))
+                if (request != null) {
+                    val original = request.original
+                    if (error == null && original != null) {
+                        // Apply the acknowledged fields until the authoritative sync arrives.
+                        contacts = contacts.map {
+                            if (it.id == original.id && it.name == original.name &&
+                                it.phones == original.phones && it.emails == original.emails) {
+                                it.copy(name = request.edited.name, phones = request.edited.phones, emails = request.edited.emails)
+                            } else it
+                        }.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+                        pruneContactDefaults()
+                        rebuildIndex()
+                        persist()
+                    }
+                    finishContactSave(error)
+                } else if (error != null) problem = error
                 resync()   // saved or not, fetch the Android phone's version so both sides agree again
+            }
+            CONTACT_PHONE_DELETE_PREPARED -> {
+                val pending = phoneDeletion?.takeIf { it.request == re && !it.confirming && it.token == null }
+                    ?: return true
+                val token = b.opt("token") as? String
+                if (b.opt("ok") == true && !token.isNullOrBlank() && b.opt("number") == pending.number) {
+                    trackPhoneDeletion(pending.copy(token = token))
+                } else finishPhoneDeletion(b.optString("code", "provider_error"))
+            }
+            CONTACT_PHONE_DELETE_RESULT -> {
+                val pending = phoneDeletion?.takeIf { it.request == re && it.confirming } ?: return true
+                if (b.opt("ok") == true) {
+                    if (contactDefaults[pending.contact] == dialable(pending.number)) {
+                        contactDefaults.remove(pending.contact)
+                        persist()
+                    }
+                    finishPhoneDeletion()
+                } else finishPhoneDeletion(b.optString("code", "unverified"))
             }
             T.CALLS_BATCH -> mergeCalls(b.optJSONArray("items").mapObjects(::callEntryOf), b.optBoolean("more"))
             T.NET_STATE -> {
@@ -507,7 +741,7 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
                 } else net = b
                 netError = b.optStringOrNull("err")
                 // A state pushed because another client flipped a switch must not clear our own pending one.
-                if (re != null) netPending = null
+                if (re != null && re == netWrite?.id) { netPending = null; netWrite = null }
             }
             T.SELFTEST_RESULT -> selftest = b
             T.USSD_RESULT -> {
@@ -517,7 +751,11 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
                 ussdPending = null
                 ussdAnswer = UssdAnswer(code, b.optBoolean("ok"), b.optStringOrNull("text"), b.optStringOrNull("err"))
             }
-            T.ERROR -> problem = Problem(Problem.OTHER, b.optString("msg"))
+            T.ERROR -> {
+                if (contactRequest?.reply == re && re != null) {
+                    finishContactSave(Problem(Problem.CONTACT_NOT_SAVED, b.optStringOrNull("msg")))
+                } else problem = Problem(Problem.OTHER, b.optString("msg"))
+            }
             T.PONG, T.PING -> return true
             else -> return false
         }
@@ -594,10 +832,16 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
 
     /** A new pairing or unpairing: nothing of the old Android phone's data is kept. */
     fun wipe() {
+        phoneDeletion = null
+        canDeleteContactPhone = false
+        refreshDeletedContacts = false
+        if (contactRequest != null) finishContactSave(Problem(Problem.CONTACT_SAVE_UNKNOWN))
         resetPendingIds()
         sms = emptyList(); contacts = emptyList(); recents = emptyList(); contactsVersion = ""
-        readUpTo.clear(); starred.clear(); drafts.clear(); threadSim.clear(); status = null; lists = BlockLists(); smsSyncedUpTo = null
+        contactDefaults.clear()
+        readUpTo.clear(); drafts.clear(); threadSim.clear(); status = null; lists = BlockLists(); smsSyncedUpTo = null
         outbox = emptyList(); recentsSeenUpTo = null; net = null; pendingRead.clear(); pendingSms.clear(); smsIndex.clear()
+        pendingSmsBatchHigh = null
         rebuildIndex(); persist()
     }
 
@@ -614,6 +858,7 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
         .put("contacts", JSONArray(contacts.map { it.json() }))
         .put("recents", JSONArray(recents.map { it.json() }))
         .put("contactsVersion", contactsVersion)
+        .put("contactDefaults", JSONObject(contactDefaults.mapKeys { it.key.toString() }))
         .put("readUpTo", JSONObject().apply { readUpTo.forEach { (k, v) -> put(k.toString(), v) } })
         .put("starred", JSONArray(starred.toList()))
         .put("drafts", JSONObject(drafts as Map<*, *>))
@@ -622,7 +867,7 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
         .put("outbox", JSONArray(outbox.map { JSONObject().put("to", it.to).put("body", it.body).put("placeholder", it.placeholder).apply { it.sub?.let { s -> put("sub", s) } } }))
         .apply {
             status?.let { put("status", it) }
-            smsSyncedUpTo?.let { put("smsSyncedUpTo", it) }
+            smsSyncedUpTo?.let { put("smsSyncedUpTo", it); put("smsCursorFromBatch", true) }
             recentsSeenUpTo?.let { put("recentsSeenUpTo", it) }
         }
 
@@ -631,13 +876,25 @@ class ClientState(private val link: LinkPort, private val fx: Effects) {
         contacts = o.optJSONArray("contacts").mapObjects(::contactOf)
         recents = o.optJSONArray("recents").mapObjects(::callEntryOf)
         contactsVersion = o.optString("contactsVersion")
+        contactDefaults.clear()
+        o.optJSONObject("contactDefaults")?.let { defaults ->
+            for (key in defaults.keys()) {
+                val id = key.toLongOrNull() ?: continue
+                val number = defaults.opt(key) as? String ?: continue
+                if (number.isNotEmpty()) contactDefaults[id] = number
+            }
+        }
+        pruneContactDefaults()
         o.optJSONObject("readUpTo")?.let { r -> r.keys().forEach { k -> k.toLongOrNull()?.let { readUpTo[it] = r.optLong(k) } } }
         o.optJSONArray("starred")?.let { a -> starred.clear(); for (i in 0 until a.length()) starred += a.optLong(i) }
         o.optJSONObject("drafts")?.let { r -> r.keys().forEach { drafts[it] = r.optString(it) } }
         o.optJSONObject("threadSim")?.let { r -> r.keys().forEach { threadSim[it] = r.optInt(it) } }
         status = o.optJSONObject("status")
         lists = o.optJSONObject("lists")?.let(BlockLists::of) ?: BlockLists()
-        smsSyncedUpTo = o.optLongOrNull("smsSyncedUpTo")
+        // Older snapshots could record a live id past an unseen inbox row. Replay once from zero
+        // after upgrading, while retaining the locally stored history.
+        smsSyncedUpTo = o.optLongOrNull("smsSyncedUpTo").takeIf { o.opt("smsCursorFromBatch") == true }
+        pendingSmsBatchHigh = null
         recentsSeenUpTo = o.optLongOrNull("recentsSeenUpTo")
         outbox = o.optJSONArray("outbox").mapObjects { OutboxItem(it.optString("to"), it.optString("body"), it.optIntOrNull("sub"), it.optLong("placeholder")) }
         rebuildIndex()

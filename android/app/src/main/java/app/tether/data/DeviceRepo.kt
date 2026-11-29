@@ -60,10 +60,10 @@ class CallLogRepo(private val ctx: Context, private val subs: SimRepo) {
         -1
     }
 
-    fun allIds(): List<Long> = try {
+    fun allIds(): List<Long>? = try {
         ctx.contentResolver.query(CallLog.Calls.CONTENT_URI, arrayOf(CallLog.Calls._ID), null, null, "${CallLog.Calls._ID} ASC")
-            ?.use { c -> buildList { while (c.moveToNext()) add(c.getLong(0)) } } ?: emptyList()
-    } catch (t: Throwable) { emptyList() }
+            ?.use { c -> buildList { while (c.moveToNext()) add(c.getLong(0)) } }
+    } catch (_: Exception) { null }
 
     /** Debug (adb): a throw-away call-log row with a fake number, to test deletion. */
     fun insertTest(num: String): Long = try {

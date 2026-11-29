@@ -12,6 +12,11 @@ import android.os.IBinder
 import android.util.Log
 import app.tether.R
 import app.tether.TetherApp
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Pairing with Wireless debugging from the notification's code field (issue #1: "it cannot connect and the app
@@ -20,7 +25,10 @@ import app.tether.TetherApp
  * runs in a short foreground service, and every way it can fail ends in a message that says what to do.
  */
 object AdbPairing {
-    enum class Result { OK, BAD_CODE, NO_WIFI, NO_SERVICE, WRONG_CODE, FAILED, PAIRED_NO_CONNECT }
+    enum class Result { OK, BAD_CODE, NO_WIFI, NO_SERVICE, WRONG_CODE, FAILED, PAIRED_NO_CONNECT, PAIRED_PERMISSIONS, PAIRED_HELPER_NOT_READY }
+    @Volatile var diagnostics: String? = null; private set
+    private val checking = AtomicBoolean(false)
+    val isChecking: Boolean get() = checking.get()
 
     /** The 6-digit code from what was typed (spaces, dashes, Persian or Arabic-Indic digits allowed), else null. */
     fun normalizeCode(raw: String?): String? {
@@ -36,7 +44,9 @@ object AdbPairing {
 
     /** One short line for a notification: long or multi-line exception texts made Android refuse the notification. */
     fun shortReason(t: Throwable): String =
-        (t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName).replace(Regex("\\s+"), " ").trim().take(160)
+        shortDetail(t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName)
+
+    private fun shortDetail(text: String) = text.replace(Regex("\\s+"), " ").trim().take(160)
 
     /** The message for a result (the string resource and its argument, if any). */
     fun message(r: Result, detail: String? = null): Pair<Int, String?> = when (r) {
@@ -47,10 +57,12 @@ object AdbPairing {
         Result.WRONG_CODE -> R.string.adb_wrong_code to null
         Result.FAILED -> R.string.adb_failed to (detail ?: "")
         Result.PAIRED_NO_CONNECT -> R.string.adb_paired_no_connect to (detail ?: "")
+        Result.PAIRED_PERMISSIONS -> R.string.adb_paired_permissions to (detail ?: "")
+        Result.PAIRED_HELPER_NOT_READY -> R.string.adb_paired_helper_not_ready to (detail ?: "")
     }
 
     /** A result ends the flow; these leave the code field in the notification so the user can try again. */
-    fun asksAgain(r: Result) = r != Result.OK && r != Result.PAIRED_NO_CONNECT
+    fun asksAgain(r: Result) = r in setOf(Result.BAD_CODE, Result.NO_WIFI, Result.NO_SERVICE, Result.WRONG_CODE, Result.FAILED)
 
     /** Runs the whole flow (on a background thread): pair, remember it, grant ourselves what we need, start the helper. */
     fun run(ctx: Context, code: String): Pair<Result, String?> {
@@ -64,15 +76,92 @@ object AdbPairing {
         }
         if (!paired) return Result.WRONG_CODE to null
         app.prefs.edit().putBoolean("adb_paired", true).apply()
-        return try {
-            Adb.bootstrap(app)
-            app.hub.helper.ensureRunning()
+        return checkExistingPairing(app)
+    }
+
+    /** Checks the stored identity without opening a new pairing session. */
+    fun checkExistingPairing(app: TetherApp): Pair<Result, String?> {
+        if (!checking.compareAndSet(false, true)) return Result.PAIRED_NO_CONNECT to "Connection check already in progress"
+        val stages = mutableListOf("Pairing identity recorded")
+        app.hub.refresh()
+        try {
+            return checkExistingPairing(app, stages)
+        } finally {
+            diagnostics = stages.joinToString("\n")
+            checking.set(false)
             app.hub.refresh()
-            Result.OK to null
-        } catch (t: Throwable) {
-            Log.w(Adb.TAG, "paired, but the first adb connection failed", t)
-            Result.PAIRED_NO_CONNECT to shortReason(t)
         }
+    }
+
+    private fun checkExistingPairing(app: TetherApp, stages: MutableList<String>): Pair<Result, String?> {
+        val result = verifyPostPairing(
+            {
+                val adb = Adb.get(app)
+                val (connected, details) = adb.connectForUse(retryDiscovery = true)
+                stages += details
+                if (!connected) false else {
+                    stages += "Verifying ADB shell"
+                    verifyShell(read = adb::shellProbe)
+                    stages += "ADB shell verified"
+                    true
+                }
+            },
+            {
+                stages += "Verifying permission bootstrap"
+                Adb.bootstrap(app).also {
+                    if (it.missingPermissions.isEmpty()) stages += "Required Android permissions verified"
+                }
+            },
+            { app.hub.helper.ensureRunning() }, { app.hub.helper.isRunning })
+        val detail = result.second ?: if (result.first == Result.PAIRED_NO_CONNECT) stages.last().lineSequence().last() else null
+        val (id, arg) = message(result.first, detail)
+        stages += if (arg == null) app.getString(id) else app.getString(id, arg)
+        return result.first to detail
+    }
+
+    internal fun verifyShell(timeoutMs: Long = 8_000, read: () -> String) {
+        val probe = FutureTask(read)
+        Thread(probe, "adb-shell-probe").apply { isDaemon = true }.start()
+        val reply = try {
+            probe.get(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (e: TimeoutException) {
+            throw IllegalStateException("ADB shell verification timed out", e)
+        } catch (e: ExecutionException) {
+            throw IllegalStateException("ADB shell failed: ${shortReason(e.cause ?: e)}", e)
+        } finally {
+            probe.cancel(true)
+        }
+        check(reply.trim() == "tether-adb-ready") {
+            if (reply.isBlank()) "ADB shell returned no verification output" else "ADB shell returned unexpected verification output"
+        }
+    }
+
+    internal fun verifyPostPairing(
+        connect: () -> Boolean,
+        bootstrap: () -> Adb.Companion.BootstrapResult,
+        startHelper: () -> String?,
+        helperRunning: () -> Boolean,
+    ): Pair<Result, String?> {
+        try {
+            if (!connect()) return Result.PAIRED_NO_CONNECT to null
+        } catch (e: Exception) {
+            return Result.PAIRED_NO_CONNECT to shortReason(e)
+        }
+        val grants = try {
+            bootstrap()
+        } catch (e: Exception) {
+            return Result.PAIRED_PERMISSIONS to shortReason(e)
+        }
+        val helperError = try {
+            startHelper()
+        } catch (e: Exception) {
+            shortReason(e)
+        }
+        if (grants.missingPermissions.isNotEmpty()) {
+            return Result.PAIRED_PERMISSIONS to grants.missingPermissions.joinToString(", ")
+        }
+        if (helperError != null || !helperRunning()) return Result.PAIRED_HELPER_NOT_READY to helperError?.let(::shortDetail)
+        return Result.OK to null
     }
 
     private fun onWifi(ctx: Context): Boolean = try {
@@ -83,7 +172,7 @@ object AdbPairing {
 
     /** Shows the outcome: success closes the flow, a failure keeps the code field with the reason. */
     fun show(ctx: Context, r: Result, detail: String?) {
-        val (res, arg) = message(r, detail)
+        val (res, arg) = message(r, detail?.let(::shortDetail))
         val text = if (arg != null) ctx.getString(res, arg) else ctx.getString(res)
         Adb.updateNotification(ctx, text, done = !asksAgain(r))
     }

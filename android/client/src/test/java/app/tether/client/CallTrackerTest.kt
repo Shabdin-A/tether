@@ -159,19 +159,66 @@ class CallTrackerTest {
 
     @Test fun elsewhereOffersMoveHereAndTakeAsksForTheAudio() {
         h(call("a", "active"))
+        val oldLocal = t.localOf("a")!!
         h(call("a", "active", elsewhere = true))
         assertTrue(sink.events.contains("ended ANSWERED_ELSEWHERE"))
+        t.performEnd(oldLocal) // A late local Telecom callback cannot hang up the Host call.
+        assertTrue(link.sent.none { it.t == T.CALL_END || it.t == T.CALL_REJECT })
         assertEquals("Tablet", t.remote["a"]!!.where)
         t.take("a")
         assertEquals("a", link.last(T.CALL_TAKE).b.getString("cid"))
-        assertTrue(t.remote.isEmpty())
+        assertEquals("Tablet", t.remote["a"]!!.where)
         sink.events.clear()
         h(call("a", "active"))
+        assertTrue(t.remote.isEmpty())
         assertEquals("comes back as a started call", listOf("started a active", "active"), sink.events)
         t.take("zzz")
         assertEquals("unknown calls are not taken", 1, link.sent.count { it.t == T.CALL_TAKE })
         h(call("b", "active", elsewhere = true)); h(call("b", "ended"))
         assertTrue("an ended remote call is no longer offered", t.remote.isEmpty())
+    }
+
+    @Test fun takeWithoutHostConfirmationKeepsTheRemoteCallUntilItEnds() {
+        for (direction in listOf("in", "out")) {
+            val id = direction
+            h(call(id, "active", dir = direction, elsewhere = true))
+            sink.events.clear()
+            t.take(id)
+            assertEquals("active", t.remote[id]?.state)
+            assertNull(t.localOf(id))
+            assertTrue(sink.events.isEmpty())
+            h(call(id, "active", dir = direction, elsewhere = true))
+            assertEquals("active", t.remote[id]?.state)
+            h(call(id, "ended", dir = direction))
+            assertNull(t.remote[id])
+        }
+        assertFalse(link.sent.any { it.t == T.CALL_END || it.t == T.CALL_REJECT })
+    }
+
+    @Test fun theInCallScreenCanFollowFallbackByLocalIdAndEndOnlyOnUserAction() {
+        h(call("a", "active", dir = "in"))
+        val local = t.localOf("a")!!
+        h(call("a", "active", dir = "in", elsewhere = true))
+        assertEquals("a", t.remoteForLocal(local)?.cid)
+        assertFalse(t.hasCalls)
+        assertTrue(link.sent.none { it.t == T.CALL_END })
+        t.endRemote("stale")
+        assertTrue(link.sent.none { it.t == T.CALL_END })
+        t.endRemote("a")
+        assertEquals("a", link.last(T.CALL_END).b.getString("cid"))
+        assertEquals("active", t.remoteForLocal(local)?.state)
+        h(call("a", "ended", dir = "in"))
+        assertNull(t.remoteForLocal(local))
+    }
+
+    @Test fun theFirstOutgoingStateCanAlreadyBeElsewhere() {
+        t.performStart("outgoing", "+10000000001", null)
+        h(call("a", "dialing", dir = "out", elsewhere = true))
+        assertNull(t.pendingOutgoing)
+        assertEquals("a", t.remoteForLocal("outgoing")?.cid)
+        assertFalse(t.hasCalls)
+        assertTrue(sink.events.contains("ended ANSWERED_ELSEWHERE"))
+        assertTrue(link.sent.none { it.t == T.CALL_END })
     }
 
     @Test fun reconnectReconcilesAndLinkLossEndsEverything() {

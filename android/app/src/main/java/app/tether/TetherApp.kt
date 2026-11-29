@@ -59,9 +59,10 @@ class TetherApp : Application() {
         app.tether.adb.Adb.get(this).pairWithCode(code)
         prefs.edit().putBoolean("adb_paired", true).apply()
         val grants = app.tether.adb.Adb.bootstrap(this)
-        val helper = hub.helper.ensureRunning() ?: "helper running"
+        val helper = hub.helper.ensureRunning() ?: if (hub.helper.isRunning) "helper running" else "helper not confirmed"
         hub.refresh()
-        return "paired; grants: ${grants.trim().ifEmpty { "ok" }}; $helper"
+        val grantStatus = if (grants.missingPermissions.isEmpty()) "verified" else "missing ${grants.missingPermissions.joinToString()}"
+        return "paired; grants: $grantStatus; $helper${grants.output.trim().takeIf { it.isNotEmpty() }?.let { "\n$it" }.orEmpty()}"
     }
 
     fun adbShell(cmd: String): String = app.tether.adb.Adb.get(this).shell(cmd)

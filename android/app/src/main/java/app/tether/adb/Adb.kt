@@ -13,6 +13,8 @@ import android.util.Log
 import app.tether.R
 import app.tether.TetherApp
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
+import io.github.muntashirakon.adb.AdbAuthenticationFailedException
+import io.github.muntashirakon.adb.AdbPairingRequiredException
 import io.github.muntashirakon.adb.android.AdbMdns
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
@@ -22,6 +24,8 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import java.io.File
 import java.math.BigInteger
 import java.net.InetAddress
+import java.net.ConnectException
+import java.net.SocketTimeoutException
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.PrivateKey
@@ -62,7 +66,9 @@ class Adb private constructor(private val ctx: Context) : AbsAdbConnectionManage
         certFile.writeBytes(c.encoded)
     }
 
-    override fun getPrivateKey() = key
+    // libadb destroys the KeyPair of a closed transport. Give each connection its own copy.
+    override fun getPrivateKey(): PrivateKey =
+        KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(key.encoded))
     override fun getCertificate() = cert
     override fun getDeviceName() = "tether"
 
@@ -83,21 +89,65 @@ class Adb private constructor(private val ctx: Context) : AbsAdbConnectionManage
         return pair(host, port, code.trim())
     }
 
-    @Synchronized fun ensureConnected(): Boolean {
-        if (isConnected) return true
+    @Synchronized fun ensureConnected(): Boolean = connectForUse().first
+
+    @Synchronized internal fun connectForUse(retryDiscovery: Boolean = false): Pair<Boolean, String> {
+        if (isConnected) return true to "ADB session already connected"
+        val details = mutableListOf<String>()
         val prefs = (ctx as? TetherApp)?.prefs
         val legacy = prefs?.getBoolean(PREF_LEGACY, false) ?: false
         val port = prefs?.getInt(PREF_LEGACY_PORT, ConnectOrder.DEFAULT_LEGACY_PORT) ?: ConnectOrder.DEFAULT_LEGACY_PORT
         val how = connectInOrder(object : AdbEndpoints {
-            override fun connectTls() = autoConnect(ctx, 10_000)
+            override fun connectTls(): Boolean {
+                val service = findConnectService(retryDiscovery) { attempt ->
+                    details += "TLS connect discovery attempt $attempt"
+                    val endpoint = discover(AdbMdns.SERVICE_TYPE_TLS_CONNECT, 10)
+                    if (endpoint == null) details += "TLS connect service discovery timed out (10 s)"
+                    endpoint
+                } ?: return false
+                details += "TLS connect service discovered; opening TCP and authenticating"
+                val old = isThrowOnUnauthorised
+                setThrowOnUnauthorised(true)
+                try {
+                    val connected = connect(service.first, service.second)
+                    details += if (connected) "TLS ADB session established" else "ADB handshake timed out"
+                    if (!connected) disconnectFailedAttempt()
+                    return connected
+                } catch (e: Exception) {
+                    val cause = e.cause
+                    details += when {
+                        e is AdbAuthenticationFailedException -> "ADB authentication rejected the stored identity"
+                        e is AdbPairingRequiredException -> "ADB library reported pairing required during the handshake"
+                        e is SocketTimeoutException || cause is SocketTimeoutException -> "TCP connection timed out"
+                        e is ConnectException || cause is ConnectException -> "TCP connection failed: ${AdbPairing.shortReason(cause ?: e)}"
+                        else -> "TCP/ADB handshake failed: ${e.javaClass.simpleName}: ${AdbPairing.shortReason(e)}"
+                    }
+                    disconnectFailedAttempt()
+                    return false
+                } finally {
+                    setThrowOnUnauthorised(old)
+                }
+            }
             override fun connectLegacy(port: Int) = connect("127.0.0.1", port)
-        }, ConnectOrder.tlsSupported(Build.VERSION.SDK_INT), legacy, port) { Log.i(TAG, it) }
-        if (how == "legacy") Log.i(TAG, "adb connected over TCP mode on port $port")
-        return how != null
+        }, ConnectOrder.tlsSupported(Build.VERSION.SDK_INT), legacy, port) { details += it }
+        if (how == "legacy") details += "ADB connected over opted-in TCP mode"
+        if (details.isEmpty()) details += "No ADB connection available"
+        val report = details.joinToString("\n")
+        Log.i(TAG, report)
+        return (how != null) to report
+    }
+
+    private fun disconnectFailedAttempt() {
+        runCatching { disconnect() }.onFailure { Log.w(TAG, "could not close failed ADB transport", it) }
     }
 
     /** Runs a shell command and returns its output (stdout + stderr). */
-    @Synchronized fun shell(cmd: String): String {
+    @Synchronized fun shell(cmd: String): String = readShell(cmd, firstLine = false)
+
+    /** The probe only needs its reply line; it must not wait for a separate stream-close packet. */
+    @Synchronized internal fun shellProbe(): String = readShell("echo tether-adb-ready", firstLine = true)
+
+    private fun readShell(cmd: String, firstLine: Boolean): String {
         if (!ensureConnected()) throw IllegalStateException("adb not connected")
         // "shell,raw:" runs without a PTY, so a backgrounded helper is not hung up when the stream closes.
         openStream("shell,raw:$cmd").use { s ->
@@ -105,9 +155,13 @@ class Adb private constructor(private val ctx: Context) : AbsAdbConnectionManage
             val out = StringBuilder()
             val buf = ByteArray(4096)
             while (true) {
-                val n = try { input.read(buf) } catch (e: Exception) { -1 }
+                val n = try { input.read(buf) } catch (e: Exception) { if (firstLine) throw e else -1 }
                 if (n < 0) break
                 out.append(String(buf, 0, n))
+                if (firstLine) {
+                    val newline = out.indexOf("\n")
+                    if (newline >= 0) return out.substring(0, newline)
+                }
             }
             return out.toString()
         }
@@ -119,10 +173,12 @@ class Adb private constructor(private val ctx: Context) : AbsAdbConnectionManage
         val mdns = AdbMdns(ctx, type) { addr: InetAddress?, port: Int ->
             if (addr != null && port > 0) { found = (addr.hostAddress ?: "127.0.0.1") to port; latch.countDown() }
         }
-        mdns.start()
-        latch.await(timeoutSec, TimeUnit.SECONDS)
-        mdns.stop()
-        return found
+        try {
+            mdns.start()
+            return if (latch.await(timeoutSec, TimeUnit.SECONDS)) found else null
+        } finally {
+            mdns.stop()
+        }
     }
 
     companion object {
@@ -151,6 +207,9 @@ class Adb private constructor(private val ctx: Context) : AbsAdbConnectionManage
             false
         }
 
+        data class BootstrapResult(val output: String, val missingPermissions: List<String>)
+
+        /** After pairing: request the grants, then verify them through Android rather than shell output. */
         /** USB debugging is on: then adbd, and the helper it started, keep running when Wi-Fi goes (HelperLife). */
         fun usbDebugging(ctx: Context) = Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
 
@@ -171,21 +230,23 @@ class Adb private constructor(private val ctx: Context) : AbsAdbConnectionManage
             return cm.allNetworks.any { n -> cm.getNetworkCapabilities(n)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true }
         }
 
-        /** After pairing: grant ourselves what we need through adb once. */
-        fun bootstrap(ctx: Context): String {
+        fun bootstrap(ctx: Context): BootstrapResult {
             val adb = get(ctx)
             val pkg = ctx.packageName
             val sb = StringBuilder()
-            sb.append(adb.shell("pm grant $pkg android.permission.WRITE_SECURE_SETTINGS 2>&1"))
-            for (p in listOf("READ_SMS", "RECEIVE_SMS", "SEND_SMS", "READ_CONTACTS", "WRITE_CONTACTS", "READ_CALL_LOG", "WRITE_CALL_LOG",
+            val permissions = listOf("WRITE_SECURE_SETTINGS", "READ_SMS", "RECEIVE_SMS", "SEND_SMS", "READ_CONTACTS", "WRITE_CONTACTS", "READ_CALL_LOG", "WRITE_CALL_LOG",
                 "READ_PHONE_STATE", "READ_PHONE_NUMBERS", "CALL_PHONE", "ANSWER_PHONE_CALLS") +
                 (if (Build.VERSION.SDK_INT >= 31) listOf("BLUETOOTH_CONNECT", "BLUETOOTH_ADVERTISE") else emptyList()) +
-                (if (Build.VERSION.SDK_INT >= 33) listOf("POST_NOTIFICATIONS") else emptyList())) {
+                (if (Build.VERSION.SDK_INT >= 33) listOf("POST_NOTIFICATIONS") else emptyList())
+            for (p in permissions) {
                 sb.append(adb.shell("pm grant $pkg android.permission.$p 2>&1"))
             }
             sb.append(adb.shell("cmd deviceidle whitelist +$pkg 2>&1"))
             sb.append(allowSmsWrite(ctx))
-            return sb.toString()
+            val missing = permissions.filter {
+                ctx.checkSelfPermission("android.permission.$it") != android.content.pm.PackageManager.PERMISSION_GRANTED
+            }
+            return BootstrapResult(sb.toString(), missing)
         }
 
         /**

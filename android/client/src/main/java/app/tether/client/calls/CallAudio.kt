@@ -64,7 +64,10 @@ class CallAudio(private val send: (AudioFrame) -> Boolean, private val log: (Str
         set(v) { ringbackOn = v; if (v) heardRemote = false }
 
     /** From the call tracker after every call update: the microphone goes out only while a call here is connected. */
-    fun setUplink(open: Boolean) = gate.set(open)
+    fun setUplink(open: Boolean) {
+        gate.set(open)
+        log("call audio: local active call requests uplink=" + open)
+    }
 
     /** For a problem report: the uplink gate (wanted, open) and the last call's playout figures. */
     val uplinkWanted get() = gate.isWanted
@@ -78,6 +81,7 @@ class CallAudio(private val send: (AudioFrame) -> Boolean, private val log: (Str
 
     /** A local call is up (dialing, ringing answered, active, held): the engine runs. */
     fun engine(on: Boolean) = synchronized(lock) {
+        if (wanted != on) log("call audio: local engine " + if (on) "requested by Telecom" else "released by Telecom")
         wanted = on
         if (on && !running) startLocked() else if (!on && running) stopLocked()
     }
@@ -92,7 +96,11 @@ class CallAudio(private val send: (AudioFrame) -> Boolean, private val log: (Str
         if (running && c.rate != playRate) { stopLocked(); startLocked() }
     }
 
-    override fun remoteStopped() = synchronized(lock) { codec?.release(); codec = null }
+    override fun remoteStopped() = synchronized(lock) {
+        log("call audio: received audio.stop from host")
+        codec?.release()
+        codec = null
+    }
 
     /** Call over: everything back to the start (the sequence number counts for a whole call only). */
     fun stop() = synchronized(lock) {
@@ -131,6 +139,7 @@ class CallAudio(private val send: (AudioFrame) -> Boolean, private val log: (Str
         var filled = 0
         if (missing in 1..2) repeat(missing) { k.conceal()?.let { plc -> if (sameRate) buffer.push(plc, at = now, concealed = true); filled++ } }
         val pcm = k.decode(f.payload) ?: return
+        if (frames == 1) log("call audio: first downlink frame decoded")
         if (ringback) {
             // Network ringback or the answer is audible: stop the local tone.
             var e = 0.0
@@ -164,10 +173,12 @@ class CallAudio(private val send: (AudioFrame) -> Boolean, private val log: (Str
                     .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                     .build()
             } catch (t: Throwable) { log("player not created: $t"); return@Thread }
-            track.play()
             val f = FloatArray(tenMs); val out = ShortArray(tenMs)
             var phase = 0.0; var clock = 0
             try {
+                check(track.state == AudioTrack.STATE_INITIALIZED)
+                track.play()
+                log("call audio: downlink player started @ $rate Hz")
                 while (running && playout === buffer) {
                     buffer.pull(f, tenMs)
                     if (ringback) {
@@ -181,8 +192,11 @@ class CallAudio(private val send: (AudioFrame) -> Boolean, private val log: (Str
                         }
                     } else clock = 0
                     for (i in 0 until tenMs) out[i] = (f[i] * 32767f).coerceIn(-32768f, 32767f).toInt().toShort()
-                    track.write(out, 0, tenMs)   // blocking: paces this thread
+                    val written = track.write(out, 0, tenMs) // blocking: paces this thread
+                    if (written < 0) { log("call audio: downlink write failed ($written)"); break }
                 }
+            } catch (e: RuntimeException) {
+                log("call audio: downlink player failed (${e.javaClass.simpleName})")
             } finally { runCatching { track.stop() }; track.release() }
         }, "call-play").apply { start() }
         startRecorderLocked(rate, buffer)
@@ -212,14 +226,31 @@ class CallAudio(private val send: (AudioFrame) -> Boolean, private val log: (Str
             log("microphone open @ $rate Hz; effects: ${fx.joinToString { it.javaClass.simpleName }.ifEmpty { "none" }}")
             val pcm = ShortArray(frame)
             val detector = SilenceDetector(rate)
+            val silence = ShortArray(frame)
+            var wroteUplink = false
+            var loggedPcm = false
+            var waitingForCodec = false
             try {
                 rec.startRecording()
                 while (running && playout === buffer) {
                     var got = 0
                     while (got < frame && running) { val n = rec.read(pcm, got, frame - got); if (n <= 0) break; got += n }
                     if (got < frame) continue
-                    val k = codec ?: continue
-                    if (k.rate != rate) continue
+                    if (!loggedPcm) {
+                        loggedPcm = true
+                        log("call audio: first complete microphone PCM frame")
+                    }
+                    val k = codec
+                    if (k == null || k.rate != rate) {
+                        if (gate.isWanted && !waitingForCodec) {
+                            waitingForCodec = true
+                            log(if (k == null) "call audio: uplink PCM waiting for Host audio.start"
+                                else "call audio: uplink PCM waiting for matching codec rate")
+                        }
+                        if (!gate.isWanted) waitingForCodec = false
+                        continue
+                    }
+                    waitingForCodec = false
                     // Not connected yet (dialing, ringing, held): the microphone is read and dropped, nothing is sent.
                     when (gate.admit()) {
                         UplinkGate.Admit.HOLD -> continue
@@ -235,10 +266,19 @@ class CallAudio(private val send: (AudioFrame) -> Boolean, private val log: (Str
                         SilenceDetector.Event.SOUND -> { captureSilent = false; log("microphone: sound again"); onMic() }
                         null -> Unit
                     }
-                    val input = if (muted) ShortArray(frame) else pcm
+                    val input = if (muted) silence else pcm
                     // `seq` keeps counting across restarts (rate changes): the Android phone drops frames whose number goes back.
-                    for (payload in k.encode(input)) send(AudioFrame(k.id, seq++ and 0xffff, payload))
+                    for (payload in k.encode(input)) {
+                        if (send(AudioFrame(k.id, seq++ and 0xffff, payload)) && !wroteUplink) {
+                            wroteUplink = true
+                            log("call audio: first uplink frame queued to link")
+                        }
+                    }
                 }
+            } catch (e: RuntimeException) {
+                log("call audio: microphone failed (${e.javaClass.simpleName})")
+                recorderFailed = true
+                onMic()
             } finally { runCatching { rec.stop() }; fx.forEach { runCatching { it.release() } }; rec.release() }
         }, "call-rec").apply { start() }
     }

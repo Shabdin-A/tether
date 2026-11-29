@@ -121,7 +121,7 @@ class HelperBridge(private val ctx: Context) {
                 if (len !in 0..MAX_FRAME) throw java.io.IOException("helper frame of $len bytes")
                 val p = ByteArray(len).also { input.readFully(it) }
                 when (type) {
-                    HELLO -> { hello = JSONObject(String(p)); Log.i(TAG, "helper connected: $hello"); onChange?.invoke() }
+                    HELLO -> { hello = JSONObject(String(p)); Log.i(TAG, "helper authenticated; uid=${hello?.optInt("uid", -1)}; current APK=${!isStale}"); onChange?.invoke() }
                     DOWN -> {
                         val s = ShortArray(len / 2) { (p[2 * it].toInt() and 0xff or (p[2 * it + 1].toInt() shl 8)).toShort() }
                         onDown?.invoke(s)
@@ -268,11 +268,23 @@ class HelperBridge(private val ctx: Context) {
         return h.optString("apk") != ctx.applicationInfo.sourceDir
     }
 
+    val isRunning: Boolean get() = audioSession != null
+
+    /** The authenticated Helper connection that must receive START for the current call. */
+    internal val audioSession: Any? get() = sock?.takeIf { hello != null && !isStale }
+
     private val launching = java.util.concurrent.atomic.AtomicBoolean(false)
     private val pool = java.util.concurrent.Executors.newCachedThreadPool { r -> Thread(r, "helper-launch").apply { isDaemon = true } }
     @Volatile private var lastError = "helper did not connect"
     @Volatile private var nextAttemptAt = 0L
     @Volatile private var failures = 0
+
+    internal fun launchPhase(): String = when {
+        isRunning -> "authenticated"
+        launching.get() -> "launching"
+        System.currentTimeMillis() < nextAttemptAt -> "retry backoff"
+        else -> "idle"
+    }
 
     /**
      * Starts (or replaces) the helper in the background and returns at once. Never blocks the caller:
@@ -351,7 +363,7 @@ class HelperBridge(private val ctx: Context) {
         val info = lastInfo
         val u = lastUplink
         return JSONObject()
-            .put("state", if (connected) "running" else "stopped")
+            .put("state", if (isRunning) "running" else "stopped")
             .apply { info?.optString("inject")?.takeIf { it.isNotEmpty() && it != "null" }?.let { put("method", it) } }
             .apply { info?.optString("capture")?.takeIf { it.isNotEmpty() && it != "null" }?.let { put("capture", it) } }
             .put("up", info?.optString("inject")?.let { it.isNotEmpty() && it != "null" } ?: false)

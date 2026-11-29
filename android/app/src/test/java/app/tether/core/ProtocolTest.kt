@@ -11,6 +11,13 @@ import org.junit.Test
 import java.security.KeyPair
 
 class ProtocolTest {
+    @Test fun unavailableProviderCannotCreateAnEmptyDeletionSnapshot() {
+        assertTrue(app.tether.link.syncIdPages(null, emptyList()).isEmpty())
+        assertTrue(app.tether.link.syncIdPages(emptyList(), null).isEmpty())
+        val authoritativeEmpty = app.tether.link.syncIdPages(emptyList(), emptyList()).single()
+        assertEquals(0, authoritativeEmpty.getJSONArray("sms").length())
+        assertEquals(0, authoritativeEmpty.getJSONArray("calls").length())
+    }
     private val vectors: JSONObject by lazy {
         val text = javaClass.classLoader!!.getResourceAsStream("vectors.json")!!.readBytes().toString(Charsets.UTF_8)
         JSONObject(text)

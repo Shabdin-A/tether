@@ -74,7 +74,7 @@
     <string name="adb_notif_action">Enter code</string>
     <string name="adb_notif_hint">Pairing code</string>
     <string name="adb_pairing">Pairing…</string>
-    <string name="adb_paired">Paired with Wireless debugging. Starting the audio helper…</string>
+    <string name="adb_paired">Paired with Wireless debugging. ADB connected, permissions verified, and the audio helper is running.</string>
     <string name="call_ongoing">Call in progress</string>
     <string name="call_decline">Decline</string>
     <string name="call_answer">Answer</string>
@@ -127,7 +127,6 @@
     <string name="adb_no_wifi">Wireless debugging needs Wi-Fi. Connect to a Wi-Fi network, open Pair device with pairing code again and enter the new code.</string>
     <string name="adb_no_service">The pairing window was not found. Keep Pair device with pairing code open on screen (pull this notification down over it, or use split screen) and enter the code while it is shown.</string>
     <string name="adb_wrong_code">The code was wrong or has expired. Open Pair device with pairing code again and enter the new 6-digit code.</string>
-    <string name="adb_paired_no_connect">Paired, but could not connect yet (%1$s). Tether tries again while Wireless debugging is on.</string>
     <!-- Help › problem report -->
     <string name="section_help">Help</string>
     <string name="report_title">Send a problem report</string>
@@ -137,4 +136,29 @@
     <string name="report_failed">The report could not be made: %1$s</string>
     <string name="report_copied_short">Copied, shortened to %1$d KB for the clipboard. Share sends the whole file.</string>
     <string name="action_close">Close</string>
+    <string name="adb_paired_no_connect">Paired, but ADB is not connected yet. Keep Wi-Fi and Wireless debugging on while Tether retries. %1$s</string>
+    <string name="adb_paired_permissions">Paired and connected, but required permissions could not be verified. Check the permissions in Tether Setup and the phone’s settings. %1$s</string>
+    <string name="adb_paired_helper_not_ready">Paired and connected. Permissions verified, but the audio helper is not ready. Keep Wireless debugging on and tap Start in Call audio. %1$s</string>
+    <string name="adb_checking">Checking ADB connection…</string>
+    <string name="adb_identity_recorded">Pairing recorded on this phone</string>
+    <string name="adb_check_connection">Check ADB connection</string>
+    <string name="adb_copy_diagnostics">Copy ADB diagnostics</string>
+    <string name="adb_pair_again">Pair again</string>
+    <string name="adb_port_probe">Test local ADB port</string>
+    <string name="adb_port_testing">Testing local TCP connections…</string>
+    <string name="adb_port_hint">Connection port</string>
+    <string name="adb_port_instructions">Enter the port shown under IP address &amp; Port on the main Wireless debugging screen. Use the connection port, not the pairing dialog port.</string>
+    <string name="adb_port_run">Run test</string>
+    <string name="adb_port_invalid">Enter a port from 1 to 65535.</string>
+    <string name="adb_port_report">Local ADB TCP diagnostic · Port %1$d</string>
+    <string name="adb_port_open">TCP connection opened</string>
+    <string name="adb_port_refused">Connection refused</string>
+    <string name="adb_port_timeout">TCP connection timed out</string>
+    <string name="adb_port_error">TCP connection error</string>
+    <string name="adb_port_no_address">Wi-Fi check skipped: no Wi-Fi address</string>
+    <string name="adb_port_tcp_only">TCP reachability only. TLS and ADB authentication were not tested.</string>
+    <string name="dialer_role_not_granted">Android did not grant the default phone role. Check Settings › Default apps › Phone app.</string>
+    <string name="dialer_role_unconfirmed">Android reported success, but Tether is not the current default phone app.</string>
+    <string name="dialer_role_unavailable">The default phone role is unavailable on this device or profile.</string>
+    <string name="dialer_role_request_failed">Android could not open the default phone app request. Check Settings › Default apps › Phone app.</string>
 </resources>

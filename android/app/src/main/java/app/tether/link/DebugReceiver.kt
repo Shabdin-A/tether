@@ -102,22 +102,23 @@ class DebugReceiver : BroadcastReceiver() {
         "fake_end" -> { TestConnectionService.endCurrent(); "ended" }
         "dryrun_on" -> { Hub.dryRun = true; "dry run on" }
         "dryrun_off" -> { Hub.dryRun = false; "dry run off" }
-        // Creates a throw-away contact, edits it through the same path the iPhone uses, reads it back and
+        // Creates a throw-away contact, edits it through the guarded repository path, reads it back and
         // deletes it again. Touches no existing contact.
         "contact_test" -> {
             val repo = app.contacts
-            // Three numbers, one with a custom kind. Edit 1 (as an older iPhone, no labels): the first changes type, the
-            // labelled one must keep "Satellite", the third is dropped, a new labelled one is added. Edit 2 clears the
-            // label (""). Only throw-away +1000000000x numbers; the contact is deleted at the end.
+            // Change one type, add a labelled number and an email, then clear the original custom label.
             val id = repo.add("Tether Test", listOf(PhoneEntry("+10000000006", "mobile"), PhoneEntry("+10000000007", "other", "Satellite"),
                 PhoneEntry("+10000000009", "home")), emptyList())
             fun shown() = repo.all(withPhotos = false).firstOrNull { it.id == id }?.phones?.sortedBy { it.n }?.map { it.n.takeLast(1) + "/" + it.type + (it.label?.let { l -> "/$l" } ?: "") }
             val added = shown()
-            val err = repo.update(id, "Tether Test Edited", listOf(PhoneEntry("+10000000006", "work"), PhoneEntry("+10000000007", "other"),
-                PhoneEntry("+10000000008", "home", "Studio")), listOf("test@example.com"))
+            val before = repo.all(withPhotos = false).single { it.id == id }
+            val first = before.phones.map { if (it.n == "+10000000006") it.copy(type = "work") else it }
+            val err = repo.update(before, repo.version(), "Tether Test Edited",
+                first + PhoneEntry("+10000000008", "home", "Studio"), listOf("test@example.com"))
             val edited = shown()
-            val err2 = repo.update(id, "Tether Test Edited", listOf(PhoneEntry("+10000000006", "work"), PhoneEntry("+10000000007", "home", ""),
-                PhoneEntry("+10000000008", "home", "Studio")), listOf("test@example.com"))
+            val afterFirst = repo.all(withPhotos = false).single { it.id == id }
+            val second = afterFirst.phones.map { if (it.n == "+10000000007") it.copy(type = "home", label = "") else it }
+            val err2 = repo.update(afterFirst, repo.version(), "Tether Test Edited", second, afterFirst.emails)
             val cleared = shown()
             val after = repo.all(withPhotos = false).firstOrNull { it.id == id }
             val deleted = app.contentResolver.delete(android.provider.ContactsContract.RawContacts.CONTENT_URI.buildUpon()

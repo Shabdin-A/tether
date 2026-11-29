@@ -4,21 +4,27 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.role.RoleManager
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.text.InputType
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.RadioButton
@@ -29,7 +35,9 @@ import android.widget.Toast
 import app.tether.R
 import app.tether.TetherApp
 import app.tether.adb.Adb
+import app.tether.adb.AdbPairing
 import app.tether.adb.ConnectOrder
+import app.tether.adb.LocalAdbPortProbe
 import app.tether.core.PairingCode
 import app.tether.helper.CallAudio
 import app.tether.helper.LocalMutes
@@ -42,6 +50,8 @@ import app.tether.report.ReportUi
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import java.net.Inet4Address
+import java.net.InetAddress
 
 class MainActivity : Activity() {
     private lateinit var app: TetherApp
@@ -50,6 +60,9 @@ class MainActivity : Activity() {
     private var qrUntil = 0L
     private var qrBitmap: Bitmap? = null
     private var qrLegacy = false
+    private var adbPortProbeRunning = false
+    private var adbPortReport: String? = null
+    private var dialerRequestMessage: Int? = null
     private val listener: () -> Unit = { main.post { render() } }
 
     /** Runtime permissions this Android version knows: Bluetooth ones from 12, notifications from 13. */
@@ -158,24 +171,44 @@ class MainActivity : Activity() {
             help = getString(R.string.help_permissions)) {
             requestPermissions(missingPerms(), 1)
         })
-        setup.addView(step(getString(R.string.step_n, 2, getString(R.string.step_dialer)), app.sims.isDialer(), getString(R.string.action_set),
-            help = getString(R.string.help_dialer)) {
-            startActivityForResult(if (android.os.Build.VERSION.SDK_INT >= 29) getSystemService(RoleManager::class.java).createRequestRoleIntent(RoleManager.ROLE_DIALER)
-                else Intent(android.telecom.TelecomManager.ACTION_CHANGE_DEFAULT_DIALER)
-                    .putExtra(android.telecom.TelecomManager.EXTRA_CHANGE_DEFAULT_DIALER_PACKAGE_NAME, packageName), 2)
-        })
+        val isDialer = app.sims.isDialer()
+        setup.addView(step(getString(R.string.step_n, 2, getString(R.string.step_dialer)), isDialer, getString(R.string.action_set),
+            detail = dialerRequestMessage?.takeUnless { isDialer }?.let { getString(it) },
+            help = getString(R.string.help_dialer)) { requestDialerRole() })
         val pm = getSystemService(PowerManager::class.java)
         setup.addView(step(getString(R.string.step_n, 3, getString(R.string.step_battery)), pm.isIgnoringBatteryOptimizations(packageName), getString(R.string.action_set),
             help = getString(R.string.help_battery)) {
             startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
         })
-        val adbDone = Adb.hasSecureSettings(this) && app.prefs.getBoolean("adb_paired", false)
+        val paired = app.prefs.getBoolean("adb_paired", false)
+        val adbDone = Adb.hasSecureSettings(this) && paired
         // Wireless debugging exists from Android 11; before that only TCP adb (below) can start the helper.
-        if (android.os.Build.VERSION.SDK_INT >= 30) setup.addView(step(getString(R.string.step_n, 4, getString(R.string.step_adb)), adbDone, getString(R.string.action_pair),
-            help = getString(R.string.help_adb)) {
-            Adb.showPairingNotification(this)
-            runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
-        })
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val title = getString(R.string.step_n, 4, getString(R.string.step_adb))
+            if (paired) {
+                setup.addView(label(title, R.color.text, 16f))
+                setup.addView(label(getString(if (AdbPairing.isChecking) R.string.adb_checking
+                    else R.string.adb_identity_recorded), R.color.muted, 13f))
+                if (!AdbPairing.isChecking) setup.addView(button(getString(R.string.adb_check_connection), secondary = true) {
+                    Thread { AdbPairing.checkExistingPairing(app) }.start()
+                })
+                if (!adbDone && !AdbPairing.isChecking) setup.addView(button(getString(R.string.adb_pair_again), secondary = true) { openAdbPairing() })
+            } else {
+                setup.addView(step(title, false, getString(R.string.action_pair), help = getString(R.string.help_adb)) { openAdbPairing() })
+            }
+            setup.addView(button(getString(R.string.adb_port_probe), secondary = true) { promptForAdbPort() }
+                .apply { isEnabled = !adbPortProbeRunning })
+            if (adbPortProbeRunning) setup.addView(label(getString(R.string.adb_port_testing), R.color.muted, 13f))
+            listOfNotNull(AdbPairing.diagnostics, adbPortReport).takeIf { it.isNotEmpty() }?.let { reports ->
+                val report = reports.joinToString("\n\n")
+                setup.addView(label(report, R.color.muted, 13f).apply { setTextIsSelectable(true) })
+                setup.addView(button(getString(R.string.adb_copy_diagnostics), secondary = true) {
+                    getSystemService(android.content.ClipboardManager::class.java)
+                        .setPrimaryClip(android.content.ClipData.newPlainText(getString(R.string.adb_copy_diagnostics), report))
+                    Toast.makeText(this, R.string.copied, Toast.LENGTH_SHORT).show()
+                })
+            }
+        }
 
         // Legacy TCP adb: opt-in, for Android 10 (no Wireless debugging) or a phone without a trusted Wi-Fi network.
         val tcpOn = app.prefs.getBoolean(Adb.PREF_LEGACY, false)
@@ -321,6 +354,120 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun openAdbPairing() {
+        Adb.showPairingNotification(this)
+        runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
+    }
+
+    @Suppress("DEPRECATION") // The platform role and legacy Telecom APIs both return an Activity result.
+    private fun requestDialerRole() {
+        try {
+            val intent = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                val roles = getSystemService(RoleManager::class.java)
+                if (roles == null || !roles.isRoleAvailable(RoleManager.ROLE_DIALER)) {
+                    dialerRequestMessage = R.string.dialer_role_unavailable
+                    Log.w("Tether", "Default dialer role unavailable on SDK ${android.os.Build.VERSION.SDK_INT}")
+                    render()
+                    return
+                }
+                roles.createRequestRoleIntent(RoleManager.ROLE_DIALER)
+            } else {
+                Intent(android.telecom.TelecomManager.ACTION_CHANGE_DEFAULT_DIALER)
+                    .putExtra(android.telecom.TelecomManager.EXTRA_CHANGE_DEFAULT_DIALER_PACKAGE_NAME, packageName)
+            }
+            dialerRequestMessage = null
+            startActivityForResult(intent, REQUEST_DIALER_ROLE)
+        } catch (e: ActivityNotFoundException) {
+            dialerRequestUnavailable(e)
+        } catch (e: SecurityException) {
+            dialerRequestUnavailable(e)
+        }
+    }
+
+    private fun dialerRequestUnavailable(e: RuntimeException) {
+        Log.w("Tether", "Could not open default dialer request", e)
+        dialerRequestMessage = R.string.dialer_role_request_failed
+        render()
+    }
+
+    @Deprecated("The platform role request uses the Activity result API.")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_DIALER_ROLE) return
+        val held = app.sims.isDialer()
+        Log.i("Tether", "Default dialer request: result=$resultCode held=$held sdk=${android.os.Build.VERSION.SDK_INT}")
+        dialerRequestMessage = dialerRoleMessage(held, resultCode)
+        render()
+        if (held) app.hub.refresh()
+    }
+
+    private companion object {
+        const val REQUEST_DIALER_ROLE = 2
+    }
+
+    private fun promptForAdbPort() {
+        if (adbPortProbeRunning) return
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setHint(R.string.adb_port_hint)
+        }
+        val dialog = AlertDialog.Builder(this).setTitle(R.string.adb_port_probe)
+            .setMessage(R.string.adb_port_instructions).setView(input)
+            .setNegativeButton(android.R.string.cancel, null).setPositiveButton(R.string.adb_port_run, null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val port = LocalAdbPortProbe.parsePort(input.text.toString())
+                if (port == null) input.error = getString(R.string.adb_port_invalid)
+                else {
+                    dialog.dismiss()
+                    runAdbPortProbe(port)
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    @Suppress("DEPRECATION") // Include Wi-Fi even when a VPN or cellular network is Android's default.
+    private fun currentWifiAddress(): InetAddress? {
+        val manager = getSystemService(ConnectivityManager::class.java)
+        val addresses = manager.allNetworks.asSequence()
+            .filter { manager.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
+            .flatMap { manager.getLinkProperties(it)?.linkAddresses.orEmpty().asSequence() }
+            .map { it.address }
+            .filterNot { it.isLoopbackAddress || it.isAnyLocalAddress }
+            .toList()
+        return addresses.firstOrNull { it is Inet4Address } ?: addresses.firstOrNull()
+    }
+
+    private fun runAdbPortProbe(port: Int) {
+        adbPortProbeRunning = true
+        render()
+        Thread({
+            val results = LocalAdbPortProbe.run(port, currentWifiAddress())
+            val report = buildList {
+                add(getString(R.string.adb_port_report, port))
+                results.forEach { result ->
+                    val status = getString(when (result.status) {
+                        LocalAdbPortProbe.Status.OPEN -> R.string.adb_port_open
+                        LocalAdbPortProbe.Status.REFUSED -> R.string.adb_port_refused
+                        LocalAdbPortProbe.Status.TIMEOUT -> R.string.adb_port_timeout
+                        LocalAdbPortProbe.Status.ERROR -> R.string.adb_port_error
+                        LocalAdbPortProbe.Status.NO_ADDRESS -> R.string.adb_port_no_address
+                    })
+                    add(listOfNotNull(result.address, status, result.detail).joinToString(" · "))
+                }
+                add(getString(R.string.adb_port_tcp_only))
+            }.joinToString("\n")
+            runOnUiThread {
+                if (!isDestroyed) {
+                    adbPortReport = report
+                    adbPortProbeRunning = false
+                    render()
+                }
+            }
+        }, "adb-port-probe").start()
+    }
+
     /** Explains the steps, then (on Enable) connects to adbd's TCP mode, grants what the app needs and starts the helper. */
     private fun enableTcpAdb(port: Int) {
         AlertDialog.Builder(this).setMessage(getString(R.string.adb_tcp_howto))
@@ -407,4 +554,10 @@ class MainActivity : Activity() {
         if (!done) row.addView(button(action) { onClick() })
         return row
     }
+}
+
+internal fun dialerRoleMessage(held: Boolean, resultCode: Int): Int? = when {
+    held -> null
+    resultCode == Activity.RESULT_OK -> R.string.dialer_role_unconfirmed
+    else -> R.string.dialer_role_not_granted
 }

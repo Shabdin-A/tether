@@ -9,6 +9,20 @@ import org.junit.Test
 
 /** Where a call's audio goes (protocol §5.1), issue #13: a call taken on the Android phone stays on it. */
 class AudioOwnerTest {
+    @Test fun partialAudioBridgeNeedsHostFallback() {
+        assertTrue(AudioOwner.missingBridgePath(org.json.JSONObject.NULL, "telephony_tx"))
+        assertTrue(AudioOwner.missingBridgePath("voice_call", null))
+        assertTrue(AudioOwner.missingBridgePath("voice_call", ""))
+        assertFalse(AudioOwner.missingBridgePath("voice_call", "telephony_tx"))
+    }
+
+    @Test fun helperRecoveryRequiresAStartOnTheNewConnection() {
+        val original = Any()
+        assertFalse(AudioOwner.bridgeLost(original, original))
+        assertTrue(AudioOwner.bridgeLost(original, null))
+        assertTrue(AudioOwner.bridgeLost(original, Any()))
+    }
+
     private class Client(val key: String, val name: String)
     private val iphone = Client("aa", "iPhone")
     private val second = Client("bb", "Pixel")

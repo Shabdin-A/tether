@@ -156,6 +156,15 @@ fun Context.listDate(ms: Long): String {
 
 /** The words for a [Problem] (its detail comes from the Android phone as is). */
 fun Context.describe(p: Problem): String {
+    if (p.kind == Problem.CONTACT_DELETE_FAILED) return getString(when (p.detail) {
+        "stale", "expired", "invalid_token" -> R.string.contacts_delete_stale
+        "ambiguous" -> R.string.contacts_delete_ambiguous
+        "read_only", "permission_denied" -> R.string.contacts_delete_read_only
+        "unverified" -> R.string.contacts_delete_unverified
+        "disconnected" -> R.string.err_not_connected
+        "no_answer" -> R.string.err_no_answer
+        else -> R.string.contacts_delete_failed
+    })
     val base = when (p.kind) {
         Problem.NOT_CONNECTED -> getString(R.string.err_not_connected)
         Problem.NOT_DELETED -> getString(R.string.err_not_deleted)

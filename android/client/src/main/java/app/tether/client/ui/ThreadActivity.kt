@@ -1,28 +1,35 @@
 package app.tether.client.ui
 
-import app.tether.client.model.NumberShape
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.text.InputType
+import android.text.TextUtils
+import android.text.format.DateUtils
 import android.text.util.Linkify
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import android.widget.BaseAdapter
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.TextView
 import app.tether.client.R
-import app.tether.client.model.ThreadLayout
+import app.tether.client.model.NumberShape
 import app.tether.core.Sms
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
-/**
- * One conversation: bubbles under a heading per day, the time beside them, a line above the texts that were unread
- * when it was opened (it opens there); send from either SIM, call, mute, block. A long press selects texts (tap more):
- * copy them together, star them, delete them; with one selected, a long press on it again (or Select text) picks part of
- * its text, as Telegram does.
- */
+/** One conversation: bubbles, read state, send from either SIM, copy / delete, call, mute, block. */
 class ThreadActivity : Activity() {
     private var thread = Long.MIN_VALUE
     private lateinit var address: String
@@ -30,83 +37,131 @@ class ThreadActivity : Activity() {
     private lateinit var input: EditText
     private lateinit var title: android.widget.TextView
     private lateinit var simButton: android.widget.TextView
-    private lateinit var sendButton: View
+    private lateinit var portrait: FrameLayout
+    private var avatarName: String? = null
+    private var avatarPhoto: String? = null
+    private val messages = ThreadRows()
     private var sub: Int? = null
     private var lastCount = -1
-    /** The first text that was unread when the conversation opened (the "Unread messages" line goes above it). */
-    private var unreadFrom: Long? = null
-    private var unreadChecked = false
-    /** The SIM beside the time: only when this conversation's texts went over more than one SIM. */
-    private var showSim = false
-    /** The rows on screen now (the pinned day reads them while scrolling). */
-    private var items: List<ThreadLayout.Item> = emptyList()
-    private lateinit var pinned: android.widget.TextView
+    private var focusMessage: Long? = null
     private val listener: () -> Unit = { render() }
-    private lateinit var header: LinearLayout
-    /** The bar shown instead of [header] while texts are selected. */
-    private lateinit var selBar: LinearLayout
-    /** The selected texts (ids), or null when not selecting. */
-    private var picked: LinkedHashSet<Long>? = null
-    private var backCb: Any? = null
-    /** A text to show when the conversation opens (from the Starred screen): scrolled to and briefly lit. */
-    private var focus: Long? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         address = intent.getStringExtra(EXTRA_ADDRESS) ?: run { finish(); return }
         thread = intent.getLongExtra(EXTRA_THREAD, Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE } ?: app.state.threadFor(address) ?: Long.MIN_VALUE
         sub = app.state.preferredSim(address)
-        focus = intent.getLongExtra(EXTRA_FOCUS, Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE }
+        focusMessage = intent.getLongExtra(EXTRA_FOCUS, Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE }
         // A text sent into a new conversation gets its real thread id with the provider row: follow it.
         app.state.onThreadMoved = { from, to -> if (from == thread) thread = to }
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(col(R.color.background)) }
-        header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(12), dp(8), dp(8)) }
-        title = label(app.displayName(address), size = 19f, bold = true).apply { setSingleLine() }
-        header.addView(title.weight())
-        header.addView(iconButton(R.drawable.ic_call, getString(R.string.call), R.color.accent) { app.dial(address, sub) })
-        header.addView(iconButton(R.drawable.ic_more_vert, getString(R.string.more_options)) { menu() })
-        root.addView(header)
-        selBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(8), dp(4), dp(4)); visibility = View.GONE
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isFocusableInTouchMode = true
         }
-        root.addView(selBar)
-        list = ListView(this).apply { divider = null; transcriptMode = ListView.TRANSCRIPT_MODE_NORMAL; isStackFromBottom = true }
-        // The list in a frame, with the day pinned over its top while that day's own heading is scrolled away.
-        pinned = dayChip("").apply { visibility = View.GONE; elevation = dp(6).toFloat(); importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
-        root.addView(android.widget.FrameLayout(this).apply {
-            addView(list, android.widget.FrameLayout.LayoutParams(-1, -1))
-            addView(pinned, android.widget.FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(PIN_TOP) })
-        }, LinearLayout.LayoutParams(-1, 0, 1f))
-        list.setOnScrollListener(object : android.widget.AbsListView.OnScrollListener {
-            override fun onScrollStateChanged(v: android.widget.AbsListView, state: Int) {}
-            override fun onScroll(v: android.widget.AbsListView, first: Int, visible: Int, total: Int) = updatePinned()
-        })
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(6), dp(8), dp(8)) }
-        // The SIM this text goes out on (dual-SIM phones only): tap to choose.
-        simButton = button("", Look.TONAL) { pickSim() }.apply {
-            textSize = 13f; setPadding(dp(14), dp(4), dp(14), dp(4))
-            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) }
+        val viewport = object : FrameLayout(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val width = MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight
+                column.layoutParams.width = minOf(width.coerceAtLeast(0), dp(760))
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            }
+        }.apply {
+            setBackgroundColor(BACKGROUND)
+            addView(column, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER_HORIZONTAL))
         }
-        bar.addView(simButton)
+        addHeader(column)
+        list = ListView(this).apply {
+            divider = null
+            transcriptMode = ListView.TRANSCRIPT_MODE_NORMAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            adapter = messages
+            setOnItemLongClickListener { _, _, pos, _ ->
+                val sms = (messages.getItem(pos) as? ThreadRow.Message)?.sms
+                if (sms == null) false else { bubbleMenu(sms); true }
+            }
+        }
+        column.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
+        column.addView(separator())
+        val composer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), 0, dp(10), dp(8))
+        }
+        simButton = pill("", secondary = true) { pickSim() }.apply { minimumHeight = dp(48) }
+        composer.addView(simButton, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.END })
+        val bar = row().apply { setPadding(0, dp(7), 0, 0) }
         input = EditText(this).apply {
-            hint = getString(R.string.text_message); setTextColor(col(R.color.text)); setHintTextColor(col(R.color.muted)); maxLines = 5
+            hint = getString(R.string.text_message)
+            setTextColor(Color.WHITE)
+            setHintTextColor(MUTED)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            textSize = 16f
+            maxLines = 5
+            minimumHeight = dp(48)
+            background = surface(COMPOSER, 26)
+            setPaddingRelative(dp(16), dp(9), dp(16), dp(9))
             setText(app.state.draft(address))
-            addTextChangedListener(object : android.text.TextWatcher {
-                override fun beforeTextChanged(t: CharSequence?, a: Int, b: Int, c: Int) {}
-                override fun onTextChanged(t: CharSequence?, a: Int, b: Int, c: Int) {}
-                override fun afterTextChanged(e: android.text.Editable?) { sendButton.isEnabled = !e.isNullOrBlank() }
-            })
         }
         bar.addView(input.weight())
-        sendButton = fab(R.drawable.ic_send, getString(R.string.send)) { send() }.apply {
-            (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8)
-            isEnabled = input.text.isNotBlank()
+        bar.addView(action(R.drawable.ic_thread_send, R.string.send, onClick = ::send).apply {
+            background = surface(ACCENT, 24)
+            setColorFilter(INK)
+        }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
+        composer.addView(bar)
+        column.addView(composer)
+        setContentView(viewport)
+        fitSystemBars(viewport)
+        column.requestFocus()
+    }
+
+    private fun addHeader(column: LinearLayout) {
+        val brand = row().apply { setPaddingRelative(dp(16), dp(8), dp(12), 0) }
+        brand.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_link_chain)
+            setColorFilter(ACCENT)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) })
+        brand.addView(label(getString(R.string.link_brand), size = 21f, bold = true))
+        column.addView(brand)
+        val header = row().apply { setPaddingRelative(dp(4), dp(7), dp(4), dp(7)) }
+        header.addView(action(R.drawable.ic_thread_back, R.string.thread_back) { finish() })
+        portrait = FrameLayout(this)
+        header.addView(portrait, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(10) })
+        val identity = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        title = label("", size = 17f, bold = true).apply { setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
+        identity.addView(title)
+        identity.addView(label(app.format(address), size = 13f).apply {
+            setSingleLine()
+            ellipsize = TextUtils.TruncateAt.END
+            textDirection = View.TEXT_DIRECTION_LTR
+        })
+        header.addView(identity.weight())
+        header.addView(action(R.drawable.ic_thread_call, R.string.call) { app.dial(address, sub) })
+        header.addView(action(R.drawable.ic_link_overflow, R.string.thread_options, onClick = ::menu))
+        column.addView(header)
+        column.addView(separator())
+    }
+
+    private fun action(icon: Int, description: Int, onClick: () -> Unit) = ImageButton(this).apply {
+        layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+        setImageResource(icon)
+        setColorFilter(Color.WHITE)
+        scaleType = ImageView.ScaleType.CENTER_INSIDE
+        background = android.util.TypedValue().let {
+            theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, it, true)
+            getDrawable(it.resourceId)
         }
-        bar.addView(sendButton)
-        root.addView(bar)
-        setContentView(root)
-        fitSystemBars(root)
+        contentDescription = getString(description)
+        setOnClickListener { onClick() }
+    }
+
+    private fun separator() = View(this).apply {
+        setBackgroundColor(DIVIDER)
+        layoutParams = LinearLayout.LayoutParams(-1, dp(1))
+    }
+
+    private fun surface(color: Int, radius: Int) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radius).toFloat()
     }
 
     override fun onResume() {
@@ -129,255 +184,159 @@ class ThreadActivity : Activity() {
     private fun render() {
         val s = app.state
         s.openThread = thread
-        title.text = app.displayName(address)
+        val name = s.name(address).orEmpty()
+        val photo = s.photo(address)
+        title.text = name.ifBlank { getString(R.string.thread_contact) }
+        if (avatarName != name || avatarPhoto != photo) {
+            portrait.removeAllViews()
+            portrait.addView(if (name.isNotBlank() || photo != null) avatar(name, photo, 44) else ImageView(this).apply {
+                background = surface(COMPOSER, 22)
+                setImageResource(R.drawable.ic_link_contacts)
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+            }, FrameLayout.LayoutParams(-1, -1))
+            avatarName = name
+            avatarPhoto = photo
+        }
         val sims = s.sims
         simButton.visibility = if (sims.size > 1) View.VISIBLE else View.GONE
         simButton.text = sims.firstOrNull { it.sub == sub }?.let { it.name.ifEmpty { getString(R.string.sim_n, it.slot + 1) } } ?: getString(R.string.sim)
         val msgs = if (thread == Long.MIN_VALUE) emptyList() else s.messages(thread)
-        // Read before marking it read: once, when the texts are first there.
-        val first = !unreadChecked && msgs.isNotEmpty()
-        if (first) { unreadFrom = ThreadLayout.firstUnread(msgs, s.readUpTo[thread] ?: 0); unreadChecked = true }
         s.markRead(thread)
-        showSim = s.sims.size > 1 && msgs.mapTo(HashSet()) { it.sub }.size > 1
-        val items = ThreadLayout.build(msgs, ::dayStart, unreadFrom).also { items = it }
         val atEnd = list.lastVisiblePosition >= list.count - 2
-        list.adapter = Rows(items) { item ->
-            when (item) {
-                is ThreadLayout.Item.Day -> dayHeading(dayName(item.day))
-                ThreadLayout.Item.Unread -> unreadLine()
-                is ThreadLayout.Item.Msg -> bubble(item)
-            }
-        }
-        // Texts deleted meanwhile are no longer selected.
-        picked?.retainAll(msgs.mapTo(HashSet()) { it.id })
-        selectionBar(msgs)
-        val unreadAt = items.indexOf(ThreadLayout.Item.Unread)
-        // Opened with unread texts: at the line (the older ones above it); else, and as new texts come, at the end.
-        val focusAt = focus?.let { f -> items.indexOfFirst { it is ThreadLayout.Item.Msg && it.sms.id == f } } ?: -1
-        if (first && focusAt >= 0) {
-            list.setSelectionFromTop(focusAt, resources.displayMetrics.heightPixels / 4)
-            // Lit for a moment, then as the others.
-            list.postDelayed({ focus = null; render() }, 1600)
-        } else if (first && unreadAt >= 0) list.setSelectionFromTop(unreadAt, dp(8))
-        else if (atEnd || msgs.size != lastCount) list.setSelection(items.size - 1)
+        messages.update(msgs)
+        val focusPosition = focusMessage?.let(messages::positionOf) ?: -1
+        if (focusPosition >= 0) {
+            focusMessage = null
+            list.setSelectionFromTop(focusPosition, list.height / 4)
+        } else if (msgs.isNotEmpty() && (atEnd || msgs.size != lastCount)) list.setSelection(messages.count - 1)
         lastCount = msgs.size
-        list.post { updatePinned() }
     }
 
-    /** A day's name in a rounded chip (the headings and the pinned day). */
-    private fun dayChip(t: String) = label(t, R.color.text, 13f, bold = true).apply {
-        gravity = Gravity.CENTER; textAlignment = View.TEXT_ALIGNMENT_CENTER; maxLines = 1
-        setPadding(dp(14), dp(6), dp(14), dp(6))
-        background = GradientDrawable().apply {
-            cornerRadius = dp(16).toFloat(); setColor(col(R.color.surface))
-            setStroke(dp(1), android.content.res.ColorStateList.valueOf(col(R.color.muted)).withAlpha(0x40).defaultColor)
+    private sealed interface ThreadRow {
+        data class Day(val date: LocalDate, val timestamp: Long) : ThreadRow
+        data class Message(val sms: Sms) : ThreadRow
+    }
+
+    private inner class ThreadRows : BaseAdapter() {
+        private var source: List<Sms> = emptyList()
+        private var zone = ZoneId.systemDefault()
+        private var today = LocalDate.now(zone)
+        private var rows: List<ThreadRow> = emptyList()
+
+        fun update(items: List<Sms>) {
+            val currentZone = ZoneId.systemDefault()
+            val currentDay = LocalDate.now(currentZone)
+            if (items != source || zone != currentZone || today != currentDay) {
+                source = items
+                zone = currentZone
+                today = currentDay
+                rows = buildList {
+                    var previous: LocalDate? = null
+                    for (sms in items) {
+                        val day = Instant.ofEpochMilli(sms.date).atZone(zone).toLocalDate()
+                        if (day != previous) add(ThreadRow.Day(day, sms.date))
+                        add(ThreadRow.Message(sms))
+                        previous = day
+                    }
+                }
+            }
+            notifyDataSetChanged()
+        }
+
+        fun positionOf(id: Long) = rows.indexOfFirst { it is ThreadRow.Message && it.sms.id == id }
+
+        override fun getCount() = rows.size
+        override fun getItem(position: Int) = rows[position]
+        override fun getItemId(position: Int) = (rows[position] as? ThreadRow.Message)?.sms?.id ?: Long.MIN_VALUE
+        override fun areAllItemsEnabled() = false
+        override fun isEnabled(position: Int) = rows[position] is ThreadRow.Message
+        override fun getViewTypeCount() = 2
+        override fun getItemViewType(position: Int) = if (rows[position] is ThreadRow.Day) 0 else 1
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View = when (val item = rows[position]) {
+            is ThreadRow.Day -> (convertView as? FrameLayout ?: FrameLayout(this@ThreadActivity).apply {
+                setPadding(0, dp(9), 0, dp(9))
+                addView(label("", size = 12f).apply {
+                    setPadding(dp(12), dp(4), dp(12), dp(4))
+                    background = surface(COMPOSER, 14)
+                }, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+            }).apply {
+                (getChildAt(0) as TextView).text = if (item.date == today) getString(R.string.thread_today)
+                else DateUtils.formatDateTime(context, item.timestamp, DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_YEAR)
+            }
+            is ThreadRow.Message -> (convertView as? BubbleRow ?: BubbleRow()).apply { bind(item.sms) }
         }
     }
 
-    /** A day's heading: its chip between two thin lines, a clear break between days. */
-    private fun dayHeading(t: String): View = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(16), dp(HEADING_TOP), dp(16), dp(8))
-        fun rule() = View(context).apply { setBackgroundColor(col(R.color.muted)); alpha = 0.35f }
-        addView(rule(), LinearLayout.LayoutParams(0, dp(1), 1f))
-        addView(dayChip(t), LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(10); marginEnd = dp(10) })
-        addView(rule(), LinearLayout.LayoutParams(0, dp(1), 1f))
-    }
-
-    /**
-     * The day pinned at the top: shown only while the heading of the day at the top of the list is out of sight
-     * (scrolled away above), and hidden as the next day's heading comes up under it, so two never overlap.
-     */
-    private fun updatePinned() {
-        val first = list.firstVisiblePosition
-        val top = list.getChildAt(0)
-        // The heading's chip (below the row's top padding) still below the pinned day's place: no pinned day yet. It takes
-        // over when the chip reaches that place, right over it, so the heading looks as if it sticks to the top.
-        val headingInSight = items.getOrNull(first) is ThreadLayout.Item.Day && (top?.top ?: 0) + dp(HEADING_TOP) >= dp(PIN_TOP)
-        val next = list.getChildAt(1)
-        val nextHeadingClose = items.getOrNull(first + 1) is ThreadLayout.Item.Day && next != null && next.top < pinned.height + dp(PIN_TOP + 8)
-        val day = ThreadLayout.dayAt(items, first)
-        if (top == null || day == null || headingInSight || nextHeadingClose) { pinned.visibility = View.GONE; return }
-        pinned.text = dayName(day)
-        pinned.visibility = View.VISIBLE
-    }
-
-    /** The line above the texts that were unread when the conversation opened. */
-    private fun unreadLine(): View = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false; gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(16), dp(14), dp(16), dp(6))
-        fun rule() = View(context).apply { setBackgroundColor(col(R.color.muted)); alpha = 0.4f }
-        addView(rule(), LinearLayout.LayoutParams(0, dp(1), 1f))
-        addView(label(getString(R.string.unread_messages), R.color.accent, 13f, bold = true).apply {
-            setPadding(dp(12), 0, dp(12), 0)
-            setCompoundDrawablesRelative(icon(R.drawable.ic_chat, R.color.accent, 16), null, null, null); compoundDrawablePadding = dp(6)
-        })
-        addView(rule(), LinearLayout.LayoutParams(0, dp(1), 1f))
-    }
-
-    /**
-     * A text's bubble, and beside it (towards the middle, at its bottom) the time, the SIM on a dual-SIM phone and
-     * "Sending" / "Not delivered"; a run of texts in one minute shows the time once, on the last.
-     */
-    private fun bubble(item: ThreadLayout.Item.Msg): View {
-        val m = item.sms
-        val mine = ThreadLayout.mine(m)
-        val picking = picked != null
-        val isPicked = picked?.contains(m.id) == true
-        val starred = app.state.isStarred(m.id)
-        val wrap = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false
-            gravity = (if (mine && !picking) Gravity.END else Gravity.START) or Gravity.BOTTOM
-            setPadding(dp(12), dp(if (item.startsRun) 8 else 2), dp(12), dp(2))
-            // Selected: the whole row tinted, as Telegram does.
-            if (isPicked) setBackgroundColor(android.content.res.ColorStateList.valueOf(col(R.color.accent)).withAlpha(0x26).defaultColor)
-            else if (m.id == focus) setBackgroundColor(android.content.res.ColorStateList.valueOf(col(R.color.warn)).withAlpha(0x2E).defaultColor)
-            setOnLongClickListener { performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); onLong(m); true }
-            setOnClickListener { if (picked != null) toggle(m.id) }
+    private inner class BubbleRow : FrameLayout(this@ThreadActivity) {
+        private val body = label("", size = 16f).apply {
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            textAlignment = View.TEXT_ALIGNMENT_TEXT_START
+            movementMethod = android.text.method.LinkMovementMethod.getInstance()
         }
-        if (picking) {
-            // A ring at the start of each row, filled with a check mark when selected; own texts pushed to the end.
-            wrap.addView(android.widget.ImageView(this).apply {
-                background = GradientDrawable().apply { shape = GradientDrawable.OVAL
-                    if (isPicked) setColor(col(R.color.accent)) else setStroke(dp(2), col(R.color.muted)) }
-                if (isPicked) setImageDrawable(icon(R.drawable.ic_check, R.color.background, 16))
-                scaleType = android.widget.ImageView.ScaleType.CENTER
-            }, LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(10); bottomMargin = dp(8) })
-            if (mine) wrap.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        private val metadata = label("", size = 11f)
+        private val bubble = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+            addView(body, LinearLayout.LayoutParams(-2, -2))
+            addView(metadata, LinearLayout.LayoutParams(-2, -2))
         }
-        val r = dp(18).toFloat(); val s = dp(6).toFloat()
-        // The corner on the sender's side is tighter where the next bubble of the run follows (as phones draw runs).
-        val tail = if (item.showTime) r else s
-        val radii = if (mine) floatArrayOf(r, r, r, r, tail, tail, r, r) else floatArrayOf(r, r, r, r, r, r, tail, tail)
-        val body = label(m.body, if (mine) R.color.background else R.color.text, 16f).apply {
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            background = GradientDrawable().apply { cornerRadii = radii; setColor(col(if (mine) R.color.accent else R.color.surface)) }
+        private var boundBody: String? = null
+        private lateinit var boundSms: Sms
+
+        init {
+            setPadding(0, dp(5), 0, dp(5))
+            addView(bubble, FrameLayout.LayoutParams(-2, -2))
+            body.setOnLongClickListener { bubbleMenu(boundSms); true }
+        }
+
+        @Suppress("RtlHardcoded") // The approved thread puts incoming left and outgoing right in both locales.
+        fun bind(m: Sms) {
+            boundSms = m
+            val mine = m.box != 1
+            val gravity = if (mine) Gravity.RIGHT else Gravity.LEFT
+            (bubble.layoutParams as FrameLayout.LayoutParams).gravity = gravity
+            (metadata.layoutParams as LinearLayout.LayoutParams).gravity = gravity
+            bubble.background = surface(if (mine) ACCENT else CHARCOAL, 20)
+            body.setTextColor(if (mine) INK else Color.WHITE)
+            body.setLinkTextColor(if (mine) INK else ACCENT)
+            val state = when (m.box) { 4, 6 -> getString(R.string.sending); 5 -> getString(R.string.not_delivered); else -> null }
+            val clock = DateUtils.formatDateTime(this@ThreadActivity, m.date, DateUtils.FORMAT_SHOW_TIME)
+            metadata.text = listOfNotNull(clock, app.state.simName(m.sub), state).joinToString(" · ")
+            metadata.setTextColor(if (m.box == 5) FAILURE else if (mine) INK else MUTED)
+            if (boundBody == m.body) return
+            boundBody = m.body
             // Links, e-mail addresses and phone numbers, except "numbers" that are dates, versions or amounts.
-            text = android.text.SpannableString(m.body).also { sp ->
+            body.text = android.text.SpannableString(m.body).also { sp ->
                 Linkify.addLinks(sp, Linkify.WEB_URLS or Linkify.PHONE_NUMBERS or Linkify.EMAIL_ADDRESSES)
                 for (link in sp.getSpans(0, sp.length, android.text.style.URLSpan::class.java)) {
                     if (link.url.startsWith("tel:") && NumberShape.isNotAPhoneNumber(sp.substring(sp.getSpanStart(link), sp.getSpanEnd(link)))) sp.removeSpan(link)
                 }
             }
-            // Links open with a tap, except while selecting (a tap then selects the text).
-            if (!picking) movementMethod = android.text.method.LinkMovementMethod.getInstance()
-            setOnLongClickListener { performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); onLong(m); true }
-            setOnClickListener { if (picked != null) toggle(m.id) }
-            // Each line takes the direction of its first letter (Persian: right to left, on the right; English: left to
-            // right, on the left); a line with no letters follows the phone's language.
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-            textAlignment = View.TEXT_ALIGNMENT_TEXT_START
-            maxWidth = (resources.displayMetrics.widthPixels * 0.72).toInt()
         }
-        val state = when (m.box) { 4, 6 -> getString(R.string.sending); 5 -> getString(R.string.not_delivered); else -> null }
-        val side = if (!item.showTime && state == null && !starred) null else LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; gravity = if (mine) Gravity.END else Gravity.START
-            setPaddingRelative(dp(if (mine) 0 else 8), 0, dp(if (mine) 8 else 0), dp(2))   // relative: the gap faces the bubble in Persian too
-            // Its own width too: matching the column, a SIM name wider than a short (Persian) time was cut to "S".
-            if (showSim) app.state.simName(m.sub)?.let { addView(label(it, R.color.muted, 10f).apply { setPadding(0, 0, 0, 0); maxLines = 1 }, LinearLayout.LayoutParams(-2, -2)) }
-            if (starred) addView(android.widget.ImageView(context).apply { setImageDrawable(icon(R.drawable.ic_star, R.color.warn, 14))
-                contentDescription = getString(R.string.starred) }, LinearLayout.LayoutParams(dp(14), dp(14)).apply { bottomMargin = dp(2) })
-            // Each line its own width (the column is as wide as its widest; a star alone made the time cut off).
-            if (item.showTime || state != null) addView(label(android.text.format.DateUtils.formatDateTime(context, m.date, android.text.format.DateUtils.FORMAT_SHOW_TIME), R.color.muted, 11f).apply {
-                setPadding(0, 0, 0, 0); textDirection = View.TEXT_DIRECTION_LTR }, LinearLayout.LayoutParams(-2, -2))
-            state?.let { addView(label(it, if (m.box == 5) R.color.bad else R.color.muted, 11f).apply { setPadding(0, 0, 0, 0) }, LinearLayout.LayoutParams(-2, -2)) }
-        }
-        if (mine) side?.let { wrap.addView(it) }
-        wrap.addView(body, LinearLayout.LayoutParams(-2, -2))
-        if (!mine) side?.let { wrap.addView(it) }
-        return wrap
-    }
 
-    /**
-     * A long press: starts selecting with this text; on the only selected text, picks part of its text (as Telegram
-     * does: holding the selected message again goes into its text); else adds or removes it.
-     */
-    private fun onLong(m: Sms) {
-        val set = picked
-        when {
-            set == null -> { picked = linkedSetOf(m.id); render() }
-            set.size == 1 && m.id in set -> selectText(m)
-            else -> toggle(m.id)
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val available = MeasureSpec.getSize(widthMeasureSpec)
+            val limit = (minOf((available * 0.78).toInt(), dp(460)) - bubble.paddingLeft - bubble.paddingRight).coerceAtLeast(1)
+            if (body.maxWidth != limit) body.maxWidth = limit
+            if (metadata.maxWidth != limit) metadata.maxWidth = limit
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
         }
     }
 
-    private fun toggle(id: Long) {
-        val set = picked ?: return
-        if (!set.remove(id)) set += id
-        list.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
-        render()
-    }
-
-    private fun stopPicking() { picked = null; render() }
-
-    /**
-     * While selecting, the header gives way to: ✕, how many, and actions for the selected texts: Select text (one),
-     * Send again (one that was not delivered), Star / Unstar, Copy (together, oldest first), Delete (asks first).
-     */
-    private fun selectionBar(msgs: List<Sms>) {
-        val set = picked
-        watchBack(set != null)
-        header.visibility = if (set == null) View.VISIBLE else View.GONE
-        selBar.visibility = if (set == null) View.GONE else View.VISIBLE
-        selBar.removeAllViews()
-        if (set == null) return
-        val s = app.state
-        val sel = msgs.filter { it.id in set }
-        val one = sel.singleOrNull()
-        val allStarred = sel.isNotEmpty() && sel.all { s.isStarred(it.id) }
-        selBar.addView(iconButton(R.drawable.ic_close, getString(R.string.done_selecting)) { stopPicking() })
-        selBar.addView(label(set.size.toString(), size = 19f, bold = true).apply {
-            maxLines = 1; contentDescription = getString(R.string.recents_selected, set.size); setPadding(dp(6), 0, 0, 0) }.weight())
-        fun act(iconId: Int, name: String, colorId: Int = R.color.text, onClick: () -> Unit) =
-            selBar.addView(iconButton(iconId, name, colorId, onClick = onClick).apply { isEnabled = sel.isNotEmpty(); alpha = if (sel.isEmpty()) 0.38f else 1f })
-        one?.let { m -> act(R.drawable.ic_text_fields, getString(R.string.select_text)) { selectText(m) } }
-        one?.takeIf { it.box == 5 }?.let { m -> act(R.drawable.ic_send, getString(R.string.send_again)) {
-            s.deleteMessages(listOf(m.id)); s.sendSms(address, m.body, sub); stopPicking() } }
-        act(if (allStarred) R.drawable.ic_star else R.drawable.ic_star_border, getString(if (allStarred) R.string.unstar else R.string.star),
-            if (allStarred) R.color.warn else R.color.text) { s.setStarred(sel.map { it.id }, !allStarred); stopPicking() }
-        act(R.drawable.ic_copy, getString(R.string.copy)) { copy(sel.joinToString("\n\n") { it.body }); stopPicking() }
-        act(R.drawable.ic_delete, getString(R.string.delete), R.color.bad) {
-            AlertDialog.Builder(this).setMessage(getString(R.string.delete_texts_confirm, sel.size))
-                .setPositiveButton(R.string.delete) { _, _ -> s.deleteMessages(sel.map { it.id }); stopPicking() }
-                .setNegativeButton(android.R.string.cancel, null).show()
-        }
-    }
-
-    private fun copy(text: String) {
-        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("text", text))
-        // Android 13+ shows its own "copied" confirmation.
-        if (android.os.Build.VERSION.SDK_INT < 33) android.widget.Toast.makeText(this, R.string.copied, android.widget.Toast.LENGTH_SHORT).show()
-    }
-
-    /** Part of a text: the text, selectable (hold a word, drag the handles, Copy), or Copy all. */
-    private fun selectText(m: Sms) {
-        val tv = label(m.body, size = 17f).apply {
-            setTextIsSelectable(true); setPadding(dp(24), dp(8), dp(24), dp(8))
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG; textAlignment = View.TEXT_ALIGNMENT_TEXT_START
-        }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(label(getString(R.string.select_text_hint), R.color.muted, 13f).apply { setPadding(dp(24), dp(4), dp(24), dp(4)) })
-            addView(android.widget.ScrollView(context).apply { addView(tv) })
-        }
-        AlertDialog.Builder(this).setTitle(R.string.select_text).setView(box)
-            .setPositiveButton(R.string.copy_all) { _, _ -> copy(m.body); stopPicking() }
-            .setNegativeButton(R.string.done_selecting, null).show()
-    }
-
-    /** Back ends selecting (Android 13+ through the back dispatcher: an app targeting Android 16 gets no onBackPressed). */
-    private fun watchBack(on: Boolean) {
-        if (android.os.Build.VERSION.SDK_INT < 33) return
-        val d = onBackInvokedDispatcher
-        if (on && backCb == null) {
-            val cb = android.window.OnBackInvokedCallback { stopPicking() }
-            d.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb); backCb = cb
-        } else if (!on) (backCb as? android.window.OnBackInvokedCallback)?.let { d.unregisterOnBackInvokedCallback(it); backCb = null }
-    }
-
-    @Deprecated("Android 12 and older; newer ones use watchBack()")
-    override fun onBackPressed() {
-        if (picked != null) stopPicking() else @Suppress("DEPRECATION") super.onBackPressed()
+    private fun bubbleMenu(m: Sms) {
+        val starred = app.state.isStarred(m.id)
+        val opts = mutableListOf(getString(R.string.copy), getString(R.string.delete),
+            getString(if (starred) R.string.unstar else R.string.star))
+        if (m.box == 5) opts += getString(R.string.send_again)
+        AlertDialog.Builder(this).setItems(opts.toTypedArray()) { _, w ->
+            when (w) {
+                0 -> getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("text", m.body))
+                1 -> app.state.deleteMessages(listOf(m.id))
+                2 -> app.state.setStarred(listOf(m.id), !starred)
+                3 -> { app.state.deleteMessages(listOf(m.id)); app.state.sendSms(address, m.body, sub) }
+            }
+        }.show()
     }
 
     private fun pickSim() {
@@ -412,5 +371,17 @@ class ThreadActivity : Activity() {
         }.show()
     }
 
-    companion object { private const val PIN_TOP = 0; private const val HEADING_TOP = 18; const val EXTRA_ADDRESS = "address"; const val EXTRA_THREAD = "thread"; const val EXTRA_FOCUS = "focus" }
+    companion object {
+        const val EXTRA_ADDRESS = "address"
+        const val EXTRA_THREAD = "thread"
+        const val EXTRA_FOCUS = "focus"
+        private val BACKGROUND = Color.rgb(11, 13, 15)
+        private val CHARCOAL = Color.rgb(37, 39, 41)
+        private val COMPOSER = Color.rgb(31, 33, 36)
+        private val DIVIDER = Color.rgb(48, 50, 54)
+        private val ACCENT = Color.rgb(0, 199, 183)
+        private val INK = Color.rgb(8, 23, 24)
+        private val MUTED = Color.rgb(190, 196, 201)
+        private val FAILURE = Color.rgb(112, 18, 27)
+    }
 }

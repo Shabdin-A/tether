@@ -1,6 +1,7 @@
 package app.tether.client
 
 import app.tether.client.model.ClientState
+import app.tether.client.model.Effects
 import app.tether.client.model.LinkPort
 import app.tether.client.model.Problem
 import app.tether.core.CallEntry
@@ -72,6 +73,62 @@ class ClientStateTest {
         batch(sms(1, body = "old"))
         batch(sms(1, body = "new", read = true))
         assertEquals("new", s.sms.single().body)
+    }
+
+    @Test fun liveSmsAheadOfFinalBatchCannotSkipMissingReplyOnReconnect() {
+        s.requestSync(false, listOf("opus"), "android", "Test")
+        batch(sms(1, addr = "09123456789", box = 2), more = true)
+        rx(T.SMS_NEW, JSONObject().put("item", sms(5, thread = 20).json()))
+        batch(sms(2, addr = "+989123456789", box = 2))
+        assertEquals(2L, s.smsSyncedUpTo)
+        s.linkDown()
+        s.requestSync(false, listOf("opus"), "android", "Test")
+        assertEquals(2L, link.last(T.SYNC).b.getLong("sms"))
+        val reply = sms(3, addr = "۰۰۹۸۹۱۲۳۴۵۶۷۸۹")
+        batch(reply, sms(5, thread = 20))
+        rx(T.SMS_NEW, JSONObject().put("item", reply.json()))
+        assertEquals(listOf(1L, 2L, 3L), s.messages(7).map { it.id })
+        assertEquals(1, s.messages(7).last().box)
+        assertEquals(2, s.messages(7).first().box)
+        assertEquals(7L, s.threadFor("٠٩١٢٣٤٥٦٧٨٩"))
+        assertEquals(setOf(7L, 20L), s.conversations.map { it.thread }.toSet())
+    }
+
+    @Test fun liveSmsBeforeFirstCompletedSyncDoesNotBecomeTheFirstCursor() {
+        rx(T.SMS_NEW, JSONObject().put("item", sms(5).json()))
+        s.requestSync(false, listOf("opus"), "android", "Test")
+        assertEquals(0L, link.last(T.SYNC).b.getLong("sms"))
+    }
+
+    @Test fun oldCursorIsReplayedWithoutClearingLocalHistory() {
+        s.load(JSONObject().put("smsSyncedUpTo", 99).put("sms", JSONArray().put(sms(9).json())))
+        s.requestSync(false, listOf("opus"), "android", "Test")
+        assertEquals(0L, link.last(T.SYNC).b.getLong("sms"))
+        assertEquals(9L, s.sms.single().id)
+        batch(sms(5), sms(9))
+        val restored = ClientState(link, fx)
+        restored.load(s.toJson())
+        restored.requestSync(false, listOf("opus"), "android", "Test")
+        assertEquals(9L, link.last(T.SYNC).b.getLong("sms"))
+    }
+
+    @Test fun outOfOrderLiveRowsRefreshPersistedConversationsWithoutDuplicates() {
+        var saved: JSONObject? = null
+        var changes = 0
+        val observed = ClientState(link, object : Effects {
+            override fun save(json: String) { saved = JSONObject(json) }
+            override fun changed() { changes++ }
+        })
+        val before = observed.conversations
+        val reply = sms(8, thread = 31)
+        for (message in listOf(reply, sms(4, thread = 31), reply)) {
+            observed.received(T.SMS_NEW, JSONObject().put("item", message.json()), null)
+        }
+        assertTrue(before.isEmpty())
+        assertTrue(changes >= 3)
+        assertEquals(2, saved?.getJSONArray("sms")?.length())
+        assertEquals(31L, observed.conversations.single().thread)
+        assertEquals(8L, observed.conversations.single().last.id)
     }
 
     @Test fun notificationRules() {
@@ -473,6 +530,32 @@ class ClientStateTest {
         link.isConnected = false
         s.setNet("hotspot", true)
         assertNull("nothing pending without a link", s.netPending)
+    }
+
+    @Test fun networkStateMustBeRefreshedAfterReconnect() {
+        s.refreshNet()
+        rx(T.STATUS, JSONObject())
+        rx(T.NET_STATE, JSONObject().put("data", true))
+        assertTrue(s.hasLiveStatus)
+        assertEquals(true, s.net?.optBoolean("data"))
+        s.linkDown()
+        assertFalse(s.hasLiveStatus)
+        assertNull(s.net)
+        s.refreshNet()
+        assertEquals(2, link.sent.count { it.t == T.NET_GET })
+    }
+
+    @Test fun anotherNetworkReplyAndOldTimeoutDoNotClearNewPendingRequest() {
+        s.setNet("data", false)
+        val first = link.last(T.NET_SET).id
+        val firstTimeout = fx.timers.single().second
+        rx(T.NET_STATE, JSONObject().put("data", false), re = first)
+        s.setNet("data", true)
+        rx(T.NET_STATE, JSONObject().put("data", false), re = first)
+        firstTimeout()
+        assertEquals("data", s.netPending)
+        rx(T.NET_STATE, JSONObject().put("data", true), re = link.last(T.NET_SET).id)
+        assertNull(s.netPending)
     }
 
     @Test fun netRefreshAtMostEveryTenSeconds() {

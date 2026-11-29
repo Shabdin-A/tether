@@ -132,71 +132,199 @@ class ContactsRepo(private val ctx: Context) {
         return -1
     }
 
-    /**
-     * Edits an existing contact: sets its name and replaces its phone numbers and e-mail addresses.
-     * A contact can be made of several raw contacts (phone, Google, WhatsApp…). Only the writable ones are
-     * touched; the new numbers go into the first of them. Returns null on success, otherwise the reason.
-     */
-    fun update(contactId: Long, name: String, phones: List<PhoneEntry>, emails: List<String>, dryRun: Boolean = false): String? {
-        if (contactId < 0 || name.isBlank()) return "missing contact or name"
-        val raws = ArrayList<Long>()
-        cr.query(RawContacts.CONTENT_URI, arrayOf(RawContacts._ID),
-            "${RawContacts.CONTACT_ID} = ? AND ${RawContacts.DELETED} = 0 AND ${RawContacts.RAW_CONTACT_IS_READ_ONLY} = 0",
-            arrayOf(contactId.toString()), RawContacts._ID)?.use { c -> while (c.moveToNext()) raws.add(c.getLong(0)) }
-        if (raws.isEmpty()) return "this contact cannot be edited (read-only account)"
-        val primary = raws.first()
-        val inRaws = "${Data.RAW_CONTACT_ID} IN (${raws.joinToString(",")})"
-        val ops = ArrayList<ContentProviderOperation>()
-        // Name: replace the structured name of the primary raw contact (the provider re-splits DISPLAY_NAME).
-        ops.add(ContentProviderOperation.newDelete(Data.CONTENT_URI)
-            .withSelection("${Data.RAW_CONTACT_ID} = ? AND ${Data.MIMETYPE} = ?", arrayOf(primary.toString(), StructuredName.CONTENT_ITEM_TYPE)).build())
-        ops.add(ContentProviderOperation.newInsert(Data.CONTENT_URI).withValue(Data.RAW_CONTACT_ID, primary)
-            .withValue(Data.MIMETYPE, StructuredName.CONTENT_ITEM_TYPE).withValue(StructuredName.DISPLAY_NAME, name).build())
-        // Phones and e-mails: touch only what changed. A row that stays keeps its raw contact (Google, phone…), its
-        // type and its custom label; a removed one is deleted where it lives; a new one goes into the primary.
-        data class Row(val id: Long, val mime: String, val value: String, val type: Int, val label: String?)
-        val existing = ArrayList<Row>()
-        cr.query(Data.CONTENT_URI, arrayOf(Data._ID, Data.MIMETYPE, Data.DATA1, Data.DATA2, Data.DATA3), "$inRaws AND ${Data.MIMETYPE} IN (?, ?)",
-            arrayOf(Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE), null)?.use { c ->
-            while (c.moveToNext()) existing.add(Row(c.getLong(0), c.getString(1) ?: "", c.getString(2) ?: "", c.getInt(3), c.getString(4)))
+    /** Updates explicit fields of one validated snapshot. This path never deletes provider rows. */
+    @Synchronized
+    fun update(previous: Contact, version: String, name: String, phones: List<PhoneEntry>,
+               emails: List<String>, dryRun: Boolean = false): String? {
+        val id = previous.id
+        if (dryRun) return "contact updates require a real provider"
+        if (id < 0 || name.isBlank() || version.isBlank()) return "invalid contact snapshot"
+        if (phones.size < previous.phones.size || emails.size < previous.emails.size) return "removing contact fields is unsupported"
+
+        data class Raw(val id: Long, val version: Long)
+        val membership = "${RawContacts.CONTACT_ID} = ? AND ${RawContacts.DELETED} = 0"
+        val args = arrayOf(id.toString())
+        val raws = cr.query(RawContacts.CONTENT_URI,
+            arrayOf(RawContacts._ID, RawContacts.VERSION),
+            membership, args, null)?.use { c ->
+            buildList<Raw> { while (c.moveToNext()) add(Raw(c.getLong(0), c.getLong(1))) }
+        } ?: return "contacts unavailable"
+        val writableSelection = "$membership AND ${RawContacts.RAW_CONTACT_IS_READ_ONLY} = 0"
+        val writable = cr.query(RawContacts.CONTENT_URI, arrayOf(RawContacts._ID),
+            writableSelection, args, null)?.use { c ->
+            buildSet<Long> { while (c.moveToNext()) add(c.getLong(0)) }
+        } ?: return "contact permissions unavailable"
+        // Capture guards before checking the Client snapshot; later writes must still match them.
+        val current = all(withPhotos = false).singleOrNull { it.id == id }
+        if (raws.isEmpty() || !sameContactEditSnapshot(previous, current, version, version())) {
+            return "contact snapshot changed; sync and reopen the editor"
         }
-        val keep = HashSet<Long>()
-        for (p in phones) {
-            val match = existing.firstOrNull { it.mime == Phone.CONTENT_ITEM_TYPE && it.id !in keep && numberKey(it.value) == numberKey(p.n) && numberKey(p.n).isNotEmpty() }
-            if (match != null) {
-                keep.add(match.id)
-                // Same number: update the text if it was retyped, and the kind only when the user changed it
-                // (a custom label stays unless one is sent: PhoneLabels).
-                val v = android.content.ContentValues()
-                if (match.value != p.n) v.put(Phone.NUMBER, p.n)
-                PhoneLabels.forExisting(match.type, match.label, p.type, p.label)?.let { k ->
-                    v.put(Phone.TYPE, k.type); if (k.label != null) v.put(Phone.LABEL, k.label) else v.putNull(Phone.LABEL)
-                }
-                if (v.size() > 0) ops.add(ContentProviderOperation.newUpdate(Data.CONTENT_URI)
-                    .withSelection("${Data._ID} = ?", arrayOf(match.id.toString())).withValues(v).build())
+
+        data class Row(val id: Long, val raw: Long, val mime: String, val value: String,
+                       val type: Int, val label: String?)
+        val rows = cr.query(Data.CONTENT_URI,
+            arrayOf(Data._ID, Data.RAW_CONTACT_ID, Data.MIMETYPE, Data.DATA1, Data.DATA2, Data.DATA3),
+            "${Data.CONTACT_ID} = ?", args, null)?.use { c ->
+            buildList<Row> {
+                while (c.moveToNext()) add(Row(c.getLong(0), c.getLong(1), c.getString(2), c.getString(3).orEmpty(),
+                    c.getInt(4), c.getString(5)))
+            }
+        } ?: return "contact rows unavailable"
+        val writableRows = cr.query(Data.CONTENT_URI, arrayOf(Data._ID),
+            "${Data.CONTACT_ID} = ? AND ${Data.IS_READ_ONLY} = 0", args, null)?.use { c ->
+            buildSet<Long> { while (c.moveToNext()) add(c.getLong(0)) }
+        } ?: return "contact row permissions unavailable"
+        fun isWritable(row: Row) = row.raw in writable && row.id in writableRows
+        if (writable.isEmpty()) return "contact is read-only"
+        val destination = raws.singleOrNull()?.id?.takeIf { it in writable }
+        val guards = arrayListOf(ContentProviderOperation.newAssertQuery(RawContacts.CONTENT_URI)
+            .withSelection(membership, args).withExpectedCount(raws.size).build())
+        raws.forEach { raw ->
+            val selection = if (raw.id in writable) writableSelection else membership
+            guards.add(ContentProviderOperation.newAssertQuery(RawContacts.CONTENT_URI)
+                .withSelection("$selection AND ${RawContacts._ID} = ? AND ${RawContacts.VERSION} = ?",
+                    args + arrayOf(raw.id.toString(), raw.version.toString()))
+                .withExpectedCount(1).build())
+        }
+        val writes = ArrayList<ContentProviderOperation>()
+        val checks = ArrayList<ContentProviderOperation>()
+        fun write(row: Row, values: android.content.ContentValues) {
+            val target = "${Data._ID} = ? AND ${Data.RAW_CONTACT_ID} = ? AND ${Data.MIMETYPE} = ? AND ${Data.IS_READ_ONLY} = 0"
+            val rowArgs = arrayOf(row.id.toString(), row.raw.toString(), row.mime)
+            writes.add(ContentProviderOperation.newUpdate(Data.CONTENT_URI)
+                .withSelection("$target AND ${Data.DATA1} = ?", rowArgs + row.value)
+                .withValues(values).withExpectedCount(1).build())
+            checks.add(ContentProviderOperation.newAssertQuery(Data.CONTENT_URI)
+                .withSelection(target, rowArgs).withValues(values).withExpectedCount(1).build())
+        }
+        fun insert(raw: Long, mime: String, values: android.content.ContentValues) {
+            writes.add(ContentProviderOperation.newInsert(Data.CONTENT_URI).withValues(values)
+                .withValue(Data.RAW_CONTACT_ID, raw).withValue(Data.MIMETYPE, mime).build())
+            checks.add(ContentProviderOperation.newAssertQuery(Data.CONTENT_URI)
+                .withSelection("${Data.RAW_CONTACT_ID} = ? AND ${Data.MIMETYPE} = ? AND ${Data.DATA1} = ?",
+                    arrayOf(raw.toString(), mime, values.getAsString(Data.DATA1)))
+                .withValues(values).withExpectedCount(1).build())
+        }
+
+        if (name != previous.name) {
+            val row = rows.singleOrNull { it.mime == StructuredName.CONTENT_ITEM_TYPE }
+                ?.takeIf { destination == it.raw && isWritable(it) && it.value == previous.name }
+                ?: return "cannot identify one writable name row"
+            write(row, android.content.ContentValues().apply { put(StructuredName.DISPLAY_NAME, name) })
+        }
+
+        for ((index, phone) in phones.withIndex()) {
+            val old = previous.phones.getOrNull(index)
+            if (old == phone) continue
+            if (phone.n.isBlank()) return "empty phone number"
+            if (old?.n != phone.n && (phones.count { it.n == phone.n } != 1 ||
+                rows.any { it.mime == Phone.CONTENT_ITEM_TYPE && it.value == phone.n })) return "phone number already exists"
+            val values = android.content.ContentValues().apply { put(Phone.NUMBER, phone.n) }
+            if (old == null) {
+                val raw = destination ?: return "cannot choose an account for the new phone number"
+                val kind = PhoneLabels.forNew(phone.type, phone.label)
+                values.put(Phone.TYPE, kind.type)
+                values.put(Phone.LABEL, kind.label)
+                insert(raw, Phone.CONTENT_ITEM_TYPE, values)
             } else {
-                val k = PhoneLabels.forNew(p.type, p.label)
-                ops.add(ContentProviderOperation.newInsert(Data.CONTENT_URI).withValue(Data.RAW_CONTACT_ID, primary)
-                    .withValue(Data.MIMETYPE, Phone.CONTENT_ITEM_TYPE).withValue(Phone.NUMBER, p.n).withValue(Phone.TYPE, k.type)
-                    .withValue(Phone.LABEL, k.label).build())
+                val row = uniqueWritableContactRow(rows, { it.mime == Phone.CONTENT_ITEM_TYPE && it.value == old.n },
+                    ::isWritable) ?: return "phone row is ambiguous or read-only"
+                PhoneLabels.forExisting(row.type, row.label, phone.type, phone.label)?.let {
+                    values.put(Phone.TYPE, it.type)
+                    values.put(Phone.LABEL, it.label)
+                }
+                write(row, values)
             }
         }
-        for (e in emails) {
-            val match = existing.firstOrNull { it.mime == Email.CONTENT_ITEM_TYPE && it.id !in keep && it.value.equals(e, ignoreCase = true) }
-            if (match != null) keep.add(match.id)
-            else ops.add(ContentProviderOperation.newInsert(Data.CONTENT_URI).withValue(Data.RAW_CONTACT_ID, primary)
-                .withValue(Data.MIMETYPE, Email.CONTENT_ITEM_TYPE).withValue(Email.ADDRESS, e).withValue(Email.TYPE, Email.TYPE_HOME).build())
+        for ((index, email) in emails.withIndex()) {
+            val old = previous.emails.getOrNull(index)
+            if (old == email) continue
+            if (email.isBlank() || emails.count { it.equals(email, true) } != 1 ||
+                rows.any { it.mime == Email.CONTENT_ITEM_TYPE && it.value != old && it.value.equals(email, true) }) {
+                return "empty or duplicate email"
+            }
+            val values = android.content.ContentValues().apply { put(Email.ADDRESS, email) }
+            if (old == null) {
+                val raw = destination ?: return "cannot choose an account for the new email"
+                values.put(Email.TYPE, Email.TYPE_HOME)
+                insert(raw, Email.CONTENT_ITEM_TYPE, values)
+            } else {
+                val row = rows.singleOrNull { it.mime == Email.CONTENT_ITEM_TYPE && it.value.equals(old, true) }
+                    ?.takeIf { isWritable(it) && it.value == old }
+                    ?: return "email row is ambiguous or read-only"
+                write(row, values)
+            }
         }
-        // The same number or address kept in two accounts shows once on the iPhone: a copy whose value is still
-        // wanted stays where it is (only values the user removed are deleted).
-        val wantedPhones = phones.map { numberKey(it.n) }.filter { it.isNotEmpty() }.toSet()
-        val wantedEmails = emails.map { it.lowercase() }.toSet()
-        fun wanted(r: Row) = if (r.mime == Phone.CONTENT_ITEM_TYPE) numberKey(r.value) in wantedPhones else r.value.lowercase() in wantedEmails
-        for (r in existing) if (r.id !in keep && !wanted(r)) ops.add(ContentProviderOperation.newDelete(Data.CONTENT_URI)
-            .withSelection("${Data._ID} = ?", arrayOf(r.id.toString())).build())
-        if (dryRun) return null
-        cr.applyBatch(ContactsContract.AUTHORITY, ops)
+        // Verify the new values inside the transaction so a failed assertion rolls back the writes.
+        guards.addAll(writes)
+        guards.addAll(checks)
+        cr.applyBatch(ContactsContract.AUTHORITY, guards)
         return null
+    }
+
+    internal fun preparePhoneDeletion(contact: Long, number: String): ContactPhoneTarget {
+        if (contact < 0 || number.isBlank()) throw ContactPhoneDeleteFailure("stale")
+        if (ctx.checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            ctx.checkSelfPermission(android.Manifest.permission.WRITE_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            throw ContactPhoneDeleteFailure("permission_denied")
+        }
+        val mime = Phone.CONTENT_ITEM_TYPE
+        val values = arrayOf(contact.toString(), mime, number)
+        val selection = "${Data.CONTACT_ID} = ? AND ${Data.MIMETYPE} = ? AND ${Phone.NUMBER} = ?"
+        val target = cr.query(Data.CONTENT_URI, arrayOf(Data._ID, Data.RAW_CONTACT_ID, Data.DATA_VERSION),
+            selection, values, null)?.use { c ->
+            if (!c.moveToFirst()) throw ContactPhoneDeleteFailure("stale")
+            val row = c.getLong(0)
+            val raw = c.getLong(1)
+            val version = c.getLong(2)
+            if (c.moveToNext()) throw ContactPhoneDeleteFailure("ambiguous")
+            ContactPhoneTarget(contact, raw, row, mime, number, version, 0)
+        } ?: throw ContactPhoneDeleteFailure("provider_error")
+        val rawVersion = cr.query(RawContacts.CONTENT_URI, arrayOf(RawContacts.VERSION),
+            "${RawContacts._ID} = ? AND ${RawContacts.CONTACT_ID} = ? AND ${RawContacts.DELETED} = 0 AND ${RawContacts.RAW_CONTACT_IS_READ_ONLY} = 0",
+            arrayOf(target.raw.toString(), contact.toString()), null)?.use { c ->
+            if (!c.moveToFirst()) throw ContactPhoneDeleteFailure("read_only")
+            c.getLong(0)
+        } ?: throw ContactPhoneDeleteFailure("provider_error")
+        cr.query(Data.CONTENT_URI, arrayOf(Data._ID), "$selection AND ${Data._ID} = ? AND ${Data.IS_READ_ONLY} = 0",
+            values + target.row.toString(), null)?.use {
+            if (!it.moveToFirst()) throw ContactPhoneDeleteFailure("read_only")
+        } ?: throw ContactPhoneDeleteFailure("provider_error")
+        return target.copy(rawVersion = rawVersion)
+    }
+
+    @Synchronized
+    internal fun deletePreparedPhone(target: ContactPhoneTarget) {
+        if (preparePhoneDeletion(target.contact, target.number) != target) throw ContactPhoneDeleteFailure("stale")
+        val row = "${Data._ID} = ?"
+        val rowArgs = arrayOf(target.row.toString())
+        val match = "${Data.CONTACT_ID} = ? AND ${Data.MIMETYPE} = ? AND ${Phone.NUMBER} = ?"
+        val matchArgs = arrayOf(target.contact.toString(), target.mime, target.number)
+        val batch = arrayListOf(
+            ContentProviderOperation.newAssertQuery(RawContacts.CONTENT_URI)
+                .withSelection("${RawContacts._ID} = ? AND ${RawContacts.CONTACT_ID} = ? AND ${RawContacts.VERSION} = ? AND ${RawContacts.DELETED} = 0 AND ${RawContacts.RAW_CONTACT_IS_READ_ONLY} = 0",
+                    arrayOf(target.raw.toString(), target.contact.toString(), target.rawVersion.toString()))
+                .withExpectedCount(1).build(),
+            ContentProviderOperation.newAssertQuery(Data.CONTENT_URI)
+                .withSelection(match, matchArgs).withExpectedCount(1).build(),
+            ContentProviderOperation.newDelete(Data.CONTENT_URI)
+                .withSelection("$row AND ${Data.RAW_CONTACT_ID} = ? AND ${Data.MIMETYPE} = ? AND ${Phone.NUMBER} = ? AND ${Data.DATA_VERSION} = ? AND ${Data.IS_READ_ONLY} = 0",
+                    rowArgs + arrayOf(target.raw.toString(), target.mime, target.number, target.dataVersion.toString()))
+                .withExpectedCount(1).build(),
+            ContentProviderOperation.newAssertQuery(Data.CONTENT_URI)
+                .withSelection(row, rowArgs).withExpectedCount(0).build(),
+        )
+        val result = try {
+            cr.applyBatch(ContactsContract.AUTHORITY, batch)
+        } catch (e: android.content.OperationApplicationException) {
+            if (preparePhoneDeletion(target.contact, target.number) != target) throw ContactPhoneDeleteFailure("stale")
+            throw e
+        }
+        if (result.getOrNull(2)?.count != 1) throw ContactPhoneDeleteFailure("unverified")
+        val absent = runCatching {
+            cr.query(Data.CONTENT_URI, arrayOf(Data._ID), row, rowArgs, null)?.use { !it.moveToFirst() }
+        }.getOrNull()
+        if (absent != true) throw ContactPhoneDeleteFailure("unverified")
     }
 
     /** Name lookup for a number (used for call.state). */
@@ -211,3 +339,10 @@ class ContactsRepo(private val ctx: Context) {
 
     companion object { const val TAG = "Tether" }
 }
+
+internal fun sameContactEditSnapshot(previous: Contact, current: Contact?, expectedVersion: String, version: String): Boolean =
+    expectedVersion.isNotBlank() && expectedVersion == version && current != null && previous.id == current.id &&
+        previous.name == current.name && previous.phones == current.phones && previous.emails == current.emails
+
+internal fun <T> uniqueWritableContactRow(rows: List<T>, match: (T) -> Boolean, writable: (T) -> Boolean): T? =
+    rows.singleOrNull(match)?.takeIf(writable)

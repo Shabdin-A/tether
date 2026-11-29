@@ -44,8 +44,11 @@ object ClientReport {
         s.kv("Notifications allowed", app.getSystemService(NotificationManager::class.java).areNotificationsEnabled())
         s.kv("Battery optimisation off for Tether Client", app.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(app.packageName))
         val tm = app.getSystemService(TelecomManager::class.java)
-        val account = runCatching { tm.getPhoneAccount(app.telecom.account) }.getOrNull()
-        s.kv("Telecom phone account", if (account == null) "not registered" else "registered, ${if (account.isEnabled) "enabled" else "disabled"}")
+        val account = runCatching { tm.getPhoneAccount(app.telecom.account) }
+        s.kv("Telecom phone account", account.fold(
+            onSuccess = { a -> if (a == null) "lookup returned no account" else "registered, " + if (a.isEnabled) "enabled" else "disabled" },
+            onFailure = { "lookup failed (" + it.javaClass.simpleName + ")" },
+        ))
         s.kv("Default phone app", runCatching { tm.defaultDialerPackage }.getOrNull())
         s.kv("Dialer role held by Tether Client", runCatching { app.getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_DIALER) }.getOrNull())
 

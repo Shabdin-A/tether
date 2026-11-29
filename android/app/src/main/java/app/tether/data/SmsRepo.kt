@@ -34,8 +34,10 @@ class SmsRepo(private val ctx: Context) {
     /** Messages with id > [since], oldest first. A full sync (since = 0) is capped to the newest [cap]. */
     fun since(since: Long, cap: Int = 5000): List<Sms> {
         if (since <= 0) return query(null, null, "_id DESC", cap).reversed()
-        return query("_id > ?", arrayOf(since.toString()), "_id ASC", cap)
+        return newerThan(since, cap)
     }
+
+    private fun newerThan(id: Long, limit: Int) = query("_id > ?", arrayOf(id.toString()), "_id ASC", limit)
 
     @SuppressLint("Range")
     fun query(sel: String?, args: Array<String>?, order: String, limit: Int): List<Sms> {
@@ -84,7 +86,8 @@ class SmsRepo(private val ctx: Context) {
 
     /** Called by the observer and by SmsReceiver (the provider may lag the broadcast). */
     @Synchronized fun poll(onNew: (Sms) -> Unit) {
-        val news = since(lastPushed.coerceAtLeast(1), 200)
+        val news = newerThan(lastPushed.coerceAtLeast(0), 200)
+        if (news.isNotEmpty()) Log.i(TAG, "SMS provider poll: rows=${news.size}, inbox=${news.count { it.box == 1 }}")
         for (s in news) {
             onNew(s)
             if (s.id > lastPushed) lastPushed = s.id
@@ -149,11 +152,11 @@ class SmsRepo(private val ctx: Context) {
         } catch (t: Throwable) { emptyList() }
     }
 
-    /** Every SMS id on the phone (for sync.ids). */
-    fun allIds(): List<Long> = try {
+    /** Every SMS id on the phone, or null when no authoritative snapshot is available. */
+    fun allIds(): List<Long>? = try {
         ctx.contentResolver.query(uri, arrayOf("_id"), null, null, "_id ASC")
-            ?.use { c -> buildList { while (c.moveToNext()) add(c.getLong(0)) } } ?: emptyList()
-    } catch (t: Throwable) { emptyList() }
+            ?.use { c -> buildList { while (c.moveToNext()) add(c.getLong(0)) } }
+    } catch (_: Exception) { null }
 
     /** Debug (adb): writes a throw-away incoming row, to test forwarding / blocking without a real SMS. */
     fun insertTest(addr: String, body: String, type: Int = 1): Long = try {
@@ -218,12 +221,14 @@ class SmsRepo(private val ctx: Context) {
 /** SMS_RECEIVED: nudge the provider poll (the observer also fires). */
 class SmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
+        Log.i("Tether", "SMS_RECEIVED: scheduling provider poll")
         val app = context.applicationContext as TetherApp
         val pending = goAsync()
         Thread {
             try {
                 Thread.sleep(1500) // let the default SMS app store it
-                runCatching { app.hub.pollSms() }
+                runCatching { app.hub.pollSms() }.onFailure { Log.w("Tether", "SMS broadcast poll failed: ${it.javaClass.simpleName}") }
             } finally {
                 pending.finish()
             }

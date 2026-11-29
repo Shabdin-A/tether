@@ -17,15 +17,15 @@ object CallAudioReport {
         val errors = info.optJSONArray("errors")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
         val injectErrors = errors.filter { it.startsWith("inject:") }
         return buildString {
-            append("call audio path: capture ").append(info.str("capture") ?: "NONE (the iPhone hears nothing)")
+            append("call audio path: capture ").append(info.str("capture") ?: "NONE (no cellular downlink captured)")
             if (inject != null) {
                 append(", uplink injection open via ").append(inject).append(" (routed ").append(info.str("routed") ?: "?")
                 if (info.has("routedToCall") && !info.isNull("routedToCall") && !info.optBoolean("routedToCall"))
-                    append(": NOT the call's uplink, the other side may not hear the iPhone")
+                    append(": NOT the call's uplink, the other side may not hear the client")
                 append(')')
                 if (info.optBoolean("interceptInjectDead"))
                     append(" (not via intercept: this phone's audio configuration has no afe-proxy-playback path, the interception API's uplink would go nowhere)")
-            } else append(", uplink injection NOT open: the other side cannot hear the iPhone")
+            } else append(", uplink injection NOT open: the other side cannot hear the client")
             if (inject != null && injectErrors.isNotEmpty()) append(" after ").append(injectErrors.joinToString("; "))
             if (inject == null && injectErrors.isNotEmpty()) append(" (").append(injectErrors.joinToString("; ")).append(')')
             if (inject == null && injectErrors.isEmpty()) info.str("injectWhy")?.let { append(" (").append(it).append(')') }
@@ -110,7 +110,7 @@ object CallAudioReport {
         val frames = stats.optInt("uplinkFrames", -1)
         val speech = stats.optInt("uplinkSpeechFrames", -1)
         return if (frames >= 250 && speech == 0)
-            "call audio: the iPhone sent $frames frames without any speech: is its microphone allowed for Tether (iOS Settings › Privacy › Microphone) and the call not muted?"
+            "call audio: the client sent $frames frames without any speech: is its microphone allowed for Tether and the call not muted?"
         else null
     }
 }

@@ -33,6 +33,7 @@ import app.tether.core.CallEntry
 import app.tether.core.Message
 import app.tether.core.PairingCode
 import app.tether.core.Sms
+import app.tether.core.T
 import app.tether.core.ext.ExtensionLink
 import app.tether.core.ext.ExtensionRegistry
 import app.tether.client.ext.clientExtensions
@@ -153,10 +154,11 @@ class ClientApp : Application(), LinkEvents {
         notifier.clearAll()
     }
 
-    /** The call screen: the Phone app's for a call in the Phone app (if Android lets this app open it), else this app's. */
-    fun openCallScreen() {
-        if (telecom.inPhoneApp(calls.calls.firstOrNull()?.local) && telecom.showPhoneAppCallScreen()) return
-        runCatching { startActivity(Intent(this, CallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    fun openCallScreen(remoteCid: String? = null, localId: String? = null) {
+        val intent = Intent(this, CallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (localId != null) intent.putExtra(CallActivity.EXTRA_LOCAL, localId)
+        if (remoteCid != null) intent.putExtra(CallActivity.EXTRA_REMOTE, remoteCid)
+        runCatching { startActivity(intent) }
     }
 
     /** Keeps the link service in the foreground; during a call also as a phone-call / microphone service. */
@@ -227,7 +229,18 @@ class ClientApp : Application(), LinkEvents {
     override fun onState(s: BleCentral.State) { linkState = s; changed() }
     override fun onUp(transport: String) { this.transport = transport; main.post { core.linkUp(); changed() } }
     override fun onDown() { transport = "none"; main.post { core.linkDown(); changed() } }
-    override fun onMessage(m: Message) { main.post { core.message(m) } }
+    override fun onMessage(m: Message) {
+        main.post {
+            val before = state.sms.size
+            core.message(m)
+            when (m.t) {
+                T.SMS_NEW -> journal.add("sms.new: box=${m.b.optJSONObject("item")?.optInt("box")}, cache $before → ${state.sms.size}")
+                T.SMS_BATCH -> if (!m.b.optBoolean("more")) {
+                    journal.add("sms.batch complete: cache=${state.sms.size}, replay cursor=${state.smsSyncedUpTo}")
+                }
+            }
+        }
+    }
     override fun onAudio(f: AudioFrame) = core.audio(f)
     override fun onProblem(kind: String) { main.post { problem(kind) } }
     override fun log(line: String) = journal.add(line)

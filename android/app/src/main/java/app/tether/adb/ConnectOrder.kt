@@ -16,6 +16,10 @@ object ConnectOrder {
     fun tlsSupported(sdk: Int) = sdk >= 30
 }
 
+/** Retry a missing advertisement once during setup, never an authentication rejection. */
+internal fun <T> findConnectService(retry: Boolean, discover: (Int) -> T?): T? =
+    discover(1) ?: if (retry) discover(2) else null
+
 /**
  * Wireless debugging first (when this Android has it), then, only if the user opted in, legacy TCP adb on the
  * loopback address. A failure or exception of one way never stops the other; [log] gets one line per failure.

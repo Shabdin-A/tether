@@ -269,6 +269,7 @@ object HelperMain {
                     F.STOP -> withAudio { stop() }
                     F.UP -> {
                         if (!callActive) { stats.upBeforeActive++; continue }
+                        if (!pathsOpen) continue
                         val sh = ShortArray(len / 2) { (payload[2 * it].toInt() and 0xff or (payload[2 * it + 1].toInt() shl 8)).toShort() }
                         // Frames arrive in bursts (Bluetooth connection events carry 0-3, more after a hold-up): the
                         // buffer keeps them and steers the delay ahead of each frame (queue + track) in quiet frames.
@@ -344,18 +345,13 @@ object HelperMain {
             running = true
             pathsOpen = false
             val gen = ++callGen
-            localMuted = true
-            // The call is bridged to the iPhone: silence the Android phone's own earpiece always (the microphone is
-            // decided once the paths are open, see applyMic). The downlink is still captured, the injected uplink still
-            // goes out.
             mic = MicPath.Setting.of(cfg.optString("mic").takeIf { cfg.has("mic") }, cfg.optBoolean("micMute", false))
             redirectMemory = MicPath.memoryOf(cfg.optJSONObject("redirect"))
             muteMemory = LocalMutes.Memory.of(cfg.optString("muteMemory").takeIf { cfg.has("muteMemory") })
             legacyNoMute = !cfg.has("muteMemory") && !cfg.optBoolean("micMute", true)
             testLine = cfg.optBoolean("testLine")
             plan = LocalMutes.Plan.NONE; keptBlind = false
-            val local = CallAudio.localCallAudio(muted = true, mic = false, errors = errors)
-            localNote = local.note; localOk = local.ok
+            localNote = "phone audio kept while opening bridge"; localOk = false
             stats.reset()
             meter.take()
             downReads = 0; downSamples = 0; downNonZero = 0; downLiveReads = 0; callStartedAt = System.currentTimeMillis()
@@ -389,11 +385,27 @@ object HelperMain {
                     // What the capture buffered while the inject side was still being refused is stale (and overran
                     // its buffer: a 55 ms standing backlog and a slow capture clock on the test line, 2026-11-25).
                     cap?.drain(rate)
-                    startStreams(rate, gen)
-                    pathsOpen = true
-                    applyMic(rate)
-                    startErrors = errors
-                    info(startInfo())
+                    pathsOpen = cap != null && inj != null
+                    if (pathsOpen) {
+                        val local = CallAudio.localCallAudio(muted = true, mic = false, errors = errors)
+                        localMuted = true
+                        localNote = local.note; localOk = local.ok
+                        startStreams(rate, gen)
+                        applyMic(rate)
+                    } else {
+                        localNote = "phone audio kept: capture or injection unavailable"
+                    }
+                    val routedCall = inj?.let { CallAudio.routedToCall(it.routedType(), testLine) }
+                    info(JSONObject().put("id", startId).put("capture", cap?.name ?: JSONObject.NULL).put("inject", inj?.name ?: JSONObject.NULL)
+                        .put("testLineFarEnd", farEnd).put("routed", inj?.routedTo() ?: JSONObject.NULL).put("routedToCall", routedCall ?: JSONObject.NULL)
+                        .put("interceptInjectDead", CallAudio.interceptInjectDead)
+                        .put("openWaitMs", stats.openWaitMs).put("openMode", MicPath.Mode.name(CallAudio.audioMode())).put("active", callActive)
+                        .put("earpiece", localNote).put("silent", LocalMutes.silent(plan, localOk, guard?.state == RedirectGuard.State.ON))
+                        .put("mic", micJson())
+                        .put("silence", CallAudio.silence.name.lowercase()).put("telecomMicMute", plan.telecomMic).put("errors", errors)
+                        .put("uplink", uplinkJson(uplinkWhy()))
+                        .put("buffers", JSONObject().put("captureFrames", cap?.bufferFrames() ?: 0)
+                            .put("injectFrames", inj?.bufferFrames() ?: 0).put("injectLatencyMs", inj?.latencyMs() ?: -1)))
                     ShellEnv.log("call paths open after ${stats.openWaitMs} ms (waited in ${MicPath.Mode.name(waitedMode)}): capture ${cap?.name} inject ${inj?.name}")
                 } finally { audioLock.unlock() }
             }, "open").apply { start() })

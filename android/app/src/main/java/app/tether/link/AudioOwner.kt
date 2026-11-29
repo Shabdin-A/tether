@@ -14,6 +14,12 @@ package app.tether.link
  * changes, or a self-test finds call audio again. Clients are told `helper.audio` "blocked".
  */
 object AudioOwner {
+    internal fun bridgeLost(startedOn: Any?, available: Any?): Boolean =
+        available == null || startedOn !== available
+
+    internal fun missingBridgePath(capture: Any?, injection: Any?): Boolean =
+        (capture as? String).isNullOrBlank() || (injection as? String).isNullOrBlank()
+
     /** The owner when nobody holds the audio now: the live client whose key claimed during the current calls. */
     fun <C> pick(live: List<C>, key: (C) -> String, claimedKey: String?): C? =
         claimedKey?.let { k -> live.firstOrNull { key(it) == k } }

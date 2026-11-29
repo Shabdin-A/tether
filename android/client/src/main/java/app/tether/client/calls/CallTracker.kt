@@ -46,6 +46,8 @@ class CallTracker(private val link: LinkPort, private val sink: CallSink, privat
                   private val now: () -> Long = System::currentTimeMillis, private val schedule: (Long, () -> Unit) -> Unit = { _, _ -> }) {
     /** Calls whose audio is on another client, by Android phone call id (shown as "On … · Move here"). */
     val remote = LinkedHashMap<String, Call>()
+    private val remoteByLocal = HashMap<String, String>()
+    fun remoteForLocal(local: String): Call? = remoteByLocal[local]?.let(remote::get)
     private val locals = HashMap<String, String>()        // cid → local
     private val cids = HashMap<String, String>()          // local → cid
     private val lastState = HashMap<String, String>()     // cid → state
@@ -83,7 +85,7 @@ class CallTracker(private val link: LinkPort, private val sink: CallSink, privat
     // ------------------------------------------------------------------ from the Android phone
 
     fun handle(c: Call) {
-        if (lastState[c.cid] != c.state) sink.log("call ${c.cid} ${c.dir} ${c.state}${if (c.elsewhere) " elsewhere" else ""}")
+        if (lastState[c.cid] != c.state || (!c.isEnded && remote.containsKey(c.cid) != c.elsewhere)) sink.log("call ${c.cid} ${c.dir} ${c.state}${if (c.elsewhere) " elsewhere" else ""}")
         when (hungUp.check(c.cid, c.isEnded, now())) {
             HangUpGuard.Verdict.PASS -> Unit
             HangUpGuard.Verdict.DROP -> return
@@ -96,11 +98,16 @@ class CallTracker(private val link: LinkPort, private val sink: CallSink, privat
         val prev = lastState[c.cid]
         if (c.isEnded) lastState.remove(c.cid) else lastState[c.cid] = c.state
 
+        if (c.isEnded || !c.elsewhere) remoteByLocal.values.removeAll { it == c.cid }
         if (c.isEnded) remote.remove(c.cid)
         if (!c.isEnded && c.elsewhere) {
             // Answered / dialed / moved to another client: stop ringing or playing here, offer "Move here".
             remote[c.cid] = c
-            locals.remove(c.cid)?.let { local ->
+            val previous = locals.remove(c.cid) ?: pendingOutgoing?.takeIf {
+                !c.isIncoming && pendingNumber.isNotEmpty() && numberKey(c.num) == numberKey(pendingNumber)
+            }?.also { pendingOutgoing = null; dialToken++ }
+            previous?.let { local ->
+                remoteByLocal[local] = c.cid
                 cids.remove(local); info.remove(local)
                 sink.ended(local, EndReason.ANSWERED_ELSEWHERE)
                 cleanup(local)
@@ -176,7 +183,7 @@ class CallTracker(private val link: LinkPort, private val sink: CallSink, privat
                 // Connected, answered on the Android phone (not here), or taken off hold there: the local call follows.
                 // (An answer or unhold done here already set it; setting it again changes nothing.)
                 holdRequested.remove(local)
-                if (prev != "active") sink.setActive(local)
+                if (fresh || prev != "active") sink.setActive(local)
                 if (AnswerCue.shouldFire(local in placedHere, prev, c.state, local in answerCueGiven)) {
                     answerCueGiven += local
                     sink.answered(local)
@@ -186,19 +193,24 @@ class CallTracker(private val link: LinkPort, private val sink: CallSink, privat
                 // Held on the Android phone (e.g. a second call answered there): the local call must know, or its
                 // buttons act on the wrong call.
                 holdRequested.remove(local)
-                if (prev != "holding") sink.setHeld(local, true)
+                if (fresh || prev != "holding") sink.setHeld(local, true)
             }
         }
         updateUplink()
         sink.changed()
     }
 
-    /** "Move here": the Android phone switches call audio to this client and re-sends the state without `elsewhere`. */
+    /** Keep the remote call visible until the Host confirms ownership or ends the call. */
     fun take(cid: String) {
-        if (remote.remove(cid) == null) return
-        lastState.remove(cid)
+        if (cid !in remote || !link.isConnected) return
         link.send(T.CALL_TAKE, JSONObject().put("cid", cid))
-        sink.changed()
+        sink.log("call take requested; awaiting Host state")
+    }
+
+    /** An explicit end from the remote-call UI; local Telecom teardown never calls this. */
+    fun endRemote(cid: String) {
+        if (cid !in remote || !link.isConnected) return
+        link.send(T.CALL_END, JSONObject().put("cid", cid))
     }
 
     private fun updateUplink() {
@@ -219,6 +231,7 @@ class CallTracker(private val link: LinkPort, private val sink: CallSink, privat
     fun reconcile(list: List<Call>) {
         val live = list.filter { !it.isEnded }.map { it.cid }.toSet()
         remote.keys.retainAll(live)
+        remoteByLocal.values.retainAll(remote.keys)
         for ((cid, local) in locals.toMap()) if (cid !in live) {
             locals.remove(cid); cids.remove(local); lastState.remove(cid); info.remove(local)
             sink.ended(local, EndReason.REMOTE)
@@ -231,7 +244,7 @@ class CallTracker(private val link: LinkPort, private val sink: CallSink, privat
     fun linkLost() {
         for (local in locals.values) sink.ended(local, EndReason.FAILED)
         pendingOutgoing?.let { sink.ended(it, EndReason.FAILED) }
-        locals.clear(); cids.clear(); lastState.clear(); info.clear(); remote.clear(); connectedAt.clear()
+        locals.clear(); cids.clear(); lastState.clear(); info.clear(); remote.clear(); remoteByLocal.clear(); connectedAt.clear()
         pendingOutgoing = null; pendingNumber = ""; cancelledNumber = ""; cancelledDialAt = 0; dialToken++
         hungUp.reset(); answeredHere.clear(); holdRequested.clear(); placedHere.clear(); answerCueGiven.clear()
         updateUplink()
